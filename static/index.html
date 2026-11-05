@@ -92,6 +92,7 @@ const ICONS = {
   settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>',
   listings:'<path d="M20 12l-8 8-9-9V3h8l9 9z"/><circle cx="7.5" cy="7.5" r="1.2"/>',
   templates:'<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3"/>',
+  pricing:'<path d="M4 4h16v16H4zM8 8h8M8 12h3M8 16h3M14 12h2M14 16h2"/>',
   money:'<path d="M12 2v20M17 6H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',
   tag:'<path d="M20 12l-8 8-9-9V3h8l9 9z"/><circle cx="7.5" cy="7.5" r="1.2"/>',
   truck:'<path d="M1 6h13v11H1zM14 10h5l3 3v4h-8"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
@@ -121,7 +122,7 @@ function toast(msg, bad) {
 }
 async function safe(fn) { try { await fn(); } catch (e) { toast(e.message, true); } }
 
-const TABS = [['dashboard','Dashboard'],['products','Products'],['listings','Listings'],['templates','Templates'],['stock','Printing & Stock'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
+const TABS = [['dashboard','Dashboard'],['products','Products'],['listings','Listings'],['templates','Templates'],['pricing','Pricing'],['stock','Printing & Stock'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
 const TITLES = Object.fromEntries(TABS);
 const SUN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4l1.4-1.4"/></svg>';
 const MOON = '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>';
@@ -178,6 +179,10 @@ async function dashboard() {
   <div class="top"><h1>Dashboard</h1><span class="sp"></span><select id="rng" style="width:auto">
     ${[['all','All time'],['year','This year'],['month','This month'],['30','Last 30 days']].map(([k, l]) => `<option value="${k}" ${k === RANGE ? 'selected' : ''}>${l}</option>`).join('')}
   </select></div>
+  ${D.goal && D.goal.target ? `<div class="card" style="margin-bottom:12px"><div class="l">${ic('trend')}Profit goal · ${money(D.goal.target)}</div>
+    <div style="display:flex;align-items:baseline;gap:10px;margin-top:6px"><div class="v ${cls(D.goal.net)}">${money(D.goal.net)}</div><div class="mute">${D.goal.pct}% there</div><span class="sp"></span>
+    <div class="mute" style="font-size:12px">${D.goal.eta ? `at ~${money(D.goal.per_day)}/day → around <b style="color:var(--text)">${D.goal.eta}</b>` : D.goal.net >= D.goal.target ? '🎉 Goal reached' : 'Record some sales to see a projection'}</div></div>
+    <div style="height:10px;background:var(--card2);border-radius:6px;margin-top:10px;overflow:hidden"><div style="height:100%;width:${D.goal.pct}%;background:linear-gradient(90deg,var(--acc),var(--good));border-radius:6px"></div></div></div>` : ''}
   <div class="cards">
     ${card('Net profit', money(T.net), cls(T.net), 'trend', 'hero')}${card('Revenue', money(T.revenue), '', 'money')}
     ${card('Items sold', T.items, '', 'cart')}${card('Orders', T.orders, '', 'sales')}
@@ -463,6 +468,68 @@ function editTemplate(id) {
   });
 }
 
+
+/* ---------------- Pricing ---------------- */
+function feeModel(offsite) {
+  const r = ((+S.fee_transaction_pct || 0) + (+S.fee_processing_pct || 0) + (+S.fee_regulatory_pct || 0) + (offsite ? (+S.fee_offsite_ads_pct || 0) : 0)) / 100 * (1 + (+S.fee_vat_pct || 0) / 100);
+  const F = ((+S.fee_processing_fixed || 0) + (+S.fee_listing_per_item || 0)) * (1 + (+S.fee_vat_pct || 0) / 100);
+  return {r, F};
+}
+function priceCalc({cost, ship, postage, offsite, mode, target}) {
+  const {r, F} = feeModel(offsite);
+  const fixed = F + postage + cost;
+  let price;
+  if (mode === 'margin') { const d = 1 - r - target / 100; price = d > 0 ? fixed / d - ship : NaN; }
+  else price = ((target + fixed) / (1 - r)) - ship;
+  return price;
+}
+function profitAt(price, {cost, ship, postage, offsite}) {
+  const {r, F} = feeModel(offsite);
+  const gross = price + ship, fees = gross * r + F, profit = gross - fees - postage - cost;
+  return {gross, fees, profit, margin: gross ? profit / gross * 100 : 0};
+}
+async function pricing() {
+  const act = PRODUCTS.filter(p => p.active);
+  const dpost = +S.default_postage_cost || 0, dship = +S.default_shipping_charged || 0, dm = +S.target_margin_pct || 40;
+  $('#main').innerHTML = `<div class="top"><h1>Pricing calculator</h1></div>
+  <div class="note">Works out the price you need after Etsy fees (using your Settings rates), postage and material. Fees are estimates — check them against a real Etsy statement.</div>
+  <div class="card" style="margin-bottom:18px"><div class="grid">
+    <div class="full"><label>Start from a product (fills the cost)</label><select id="pc_prod"><option value="">— manual —</option>${act.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+    <div><label>Cost to make one (£)</label><input id="pc_cost" type="number" step="0.01" value="0"></div>
+    <div><label>Postage you pay (£)</label><input id="pc_post" type="number" step="0.01" value="${dpost}"></div>
+    <div><label>Shipping you charge the buyer (£)</label><input id="pc_ship" type="number" step="0.01" value="${dship}"></div>
+    <div><label><input type="checkbox" id="pc_ad" style="width:auto"> Sold via Offsite Ads</label></div>
+    <div><label>I want to target</label><select id="pc_mode"><option value="margin">a profit margin %</option><option value="profit">a profit amount £</option></select></div>
+    <div><label id="pc_tl">Target margin %</label><input id="pc_target" type="number" step="0.5" value="${dm}"></div>
+  </div></div>
+  <div id="pc_out"></div>
+  <h2>All products at their current price</h2>
+  <div class="wrap"><table><tr><th>Product</th><th class="r">Price</th><th class="r">Cost</th><th class="r">Profit</th><th class="r">Margin</th><th class="r">Price for ${dm}%</th></tr>
+  ${act.map(p => { const o = {cost: p.unit_cost, ship: dship, postage: dpost, offsite: false}; const r = profitAt(p.price, o); const tp = priceCalc({...o, mode: 'margin', target: dm});
+    return `<tr><td>${esc(p.name)}</td><td class="r">${money(p.price)}</td><td class="r">${money(p.unit_cost)}</td><td class="r ${cls(r.profit)}">${money(r.profit)}</td><td class="r ${cls(r.margin - dm)}">${r.margin.toFixed(0)}%</td><td class="r">${isFinite(tp) ? money(Math.ceil(tp * 20) / 20) : '—'}</td></tr>`; }).join('') || '<tr><td colspan=6 class="mute">No products yet.</td></tr>'}
+  </table></div><p class="mute">Profit here is for a single item with your default postage and shipping from Settings.</p>`;
+  const g = id => $(id);
+  const calc = () => {
+    const o = {cost: +g('#pc_cost').value || 0, ship: +g('#pc_ship').value || 0, postage: +g('#pc_post').value || 0, offsite: g('#pc_ad').checked};
+    const mode = g('#pc_mode').value, target = +g('#pc_target').value || 0;
+    g('#pc_tl').textContent = mode === 'margin' ? 'Target margin %' : 'Target profit per item (£)';
+    const be = priceCalc({...o, mode: 'profit', target: 0});
+    const want = priceCalc({...o, mode, target});
+    if (!isFinite(want)) { g('#pc_out').innerHTML = '<div class="note">That margin isn’t reachable — fees alone take too much. Try a lower target.</div>'; return; }
+    const nice = Math.ceil(want * 20) / 20;
+    const prod = g('#pc_prod').value;
+    const ladder = [-1, -.5, 0, .5, 1, 2].map(d => Math.max(nice + d, 0.5));
+    g('#pc_out').innerHTML = `<div class="cards">${card('Break-even price', money(Math.max(be, 0)), '', 'alert')}${card('Price for your target', money(nice), 'good', 'money', 'hero')}
+      ${card('Profit per item', money(profitAt(nice, o).profit), cls(profitAt(nice, o).profit), 'trend')}${card('Margin', profitAt(nice, o).margin.toFixed(0) + '%', '', 'tag')}</div>
+      <div class="wrap"><table><tr><th>Price</th><th class="r">Etsy fees</th><th class="r">Postage</th><th class="r">Cost</th><th class="r">Profit</th><th class="r">Margin</th></tr>
+      ${ladder.map(pr => { const r = profitAt(pr, o); return `<tr style="${Math.abs(pr - nice) < 1e-9 ? 'background:#ff7a3d14' : ''}"><td>${money(pr)}</td><td class="r">${money(-r.fees)}</td><td class="r">${money(-o.postage)}</td><td class="r">${money(-o.cost)}</td><td class="r ${cls(r.profit)}">${money(r.profit)}</td><td class="r">${r.margin.toFixed(0)}%</td></tr>`; }).join('')}</table></div>
+      ${prod ? `<button class="b" id="pc_apply">Set ${esc(PRODUCTS.find(x => x.id == prod).name)} to ${money(nice)}</button>` : ''}`;
+    if (prod) g('#pc_apply').onclick = () => safe(async () => { await api('PUT', `/api/products/${prod}`, {price: nice}); toast('Price updated (and logged in history)'); route(); });
+  };
+  g('#pc_prod').onchange = () => { const p = PRODUCTS.find(x => x.id == g('#pc_prod').value); if (p) g('#pc_cost').value = p.unit_cost.toFixed(2); calc(); };
+  $('#main').addEventListener('input', calc); calc();
+}
+
 /* ---------------- Printing & Stock ---------------- */
 async function stock() {
   const B = await api('GET', '/api/batches');
@@ -610,6 +677,11 @@ async function settingsView() {
     <div class="full"><label>Tags added to every listing (comma separated, max 13 total, 20 chars each)</label><input data-k="listing_default_tags" value="${esc(S.listing_default_tags)}"></div>
     <div class="full"><label>Description template — {name} becomes the product name</label><textarea data-k="listing_desc_template" rows="4">${esc(S.listing_desc_template)}</textarea></div>
   </div>
+  <h2>Pricing & goal</h2>
+  <div class="grid" style="max-width:700px">
+    ${f('goal_amount', 'Profit goal (£)', 'number')}${f('target_margin_pct', 'Target profit margin %', 'number')}
+    ${f('default_postage_cost', 'Typical postage cost you pay per order (£)', 'number')}${f('default_shipping_charged', 'Typical shipping you charge the buyer (£)', 'number')}
+  </div>
   <h2>Etsy fee rates (used when a sale's fees are left blank)</h2>
   <div class="grid" style="max-width:700px">
     ${f('currency', 'Currency symbol')}${f('fee_transaction_pct', 'Transaction fee %', 'number')}
@@ -649,7 +721,7 @@ async function settingsView() {
   });
 }
 
-const VIEWS = {dashboard, products, listings, templates, stock, sales, expenses, import: importView, settings: settingsView};
+const VIEWS = {dashboard, products, listings, templates, pricing, stock, sales, expenses, import: importView, settings: settingsView};
 route();
 </script>
 </body>

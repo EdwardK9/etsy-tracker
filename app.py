@@ -10,7 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -50,6 +50,10 @@ DEFAULT_SETTINGS = {
     "listing_default_tags": "",
     "listing_materials": "PLA",
     "colour_min_remaining_g": "50",
+    "goal_amount": "2000",
+    "default_postage_cost": "0",
+    "default_shipping_charged": "0",
+    "target_margin_pct": "40",
     "listing_desc_template": "{name}\n\n[Describe what it fits, size, colour options and anything the buyer should check before ordering.]",
 }
 SECRET_KEYS = ("bambuddy_key", "etsy_secret", "etsy_access_token", "etsy_refresh_token", "etsy_oauth_verifier", "etsy_oauth_state")
@@ -609,8 +613,31 @@ def api_expense(eid):
 # ---------------------------------------------------------------- dashboard
 @app.route("/api/dashboard")
 def api_dashboard():
-    f = request.args.get("from") or "0000-00-00"
-    t = request.args.get("to") or "9999-99-99"
+    data = dash(request.args.get("from") or "0000-00-00", request.args.get("to") or "9999-99-99")
+    data["goal"] = goal_info()
+    return jsonify(data)
+
+
+def goal_info():
+    s = settings()
+    target = num(s.get("goal_amount"), 2000)
+    net = dash("0000-00-00", "9999-99-99")["totals"]["net"]
+    first = one("""SELECT MIN(d) AS d FROM (SELECT MIN(date) AS d FROM sales UNION ALL SELECT MIN(date) FROM batches
+                   UNION ALL SELECT MIN(date) FROM expenses)""")["d"]
+    days = 0
+    per_day = 0.0
+    eta = None
+    if first:
+        days = max((datetime.now() - datetime.strptime(first, "%Y-%m-%d")).days, 14)
+        per_day = net / days
+        if net < target and per_day > 0:
+            from datetime import timedelta
+            eta = (datetime.now() + timedelta(days=int((target - net) / per_day) + 1)).strftime("%Y-%m-%d")
+    return {"target": target, "net": round(net, 2), "pct": round(max(min(net / target * 100, 100), 0), 1) if target else 0,
+            "per_day": round(per_day, 2), "eta": eta, "since": first}
+
+
+def dash(f, t):
     sales = rows("""SELECT s.*, p.name AS product FROM sales s JOIN products p ON p.id=s.product_id
                     WHERE s.date BETWEEN ? AND ?""", (f, t))
     batches = rows("SELECT b.*, p.name AS product FROM batches b JOIN products p ON p.id=b.product_id WHERE b.date BETWEEN ? AND ?", (f, t))
@@ -655,7 +682,7 @@ def api_dashboard():
     by_cat = {}
     for e in exps:
         by_cat[e["category"]] = by_cat.get(e["category"], 0) + e["amount"]
-    return jsonify(dict(
+    return dict(
         totals={**{k: round(v, 2) for k, v in tot.items()}, "gross_profit": round(gross_profit, 2),
                 "waste": round(waste, 2), "expenses": round(exp_total, 2), "net": round(net, 2),
                 "spent_printing": round(spent_printing, 2), "stock_value": round(stock_value, 2),
@@ -664,7 +691,7 @@ def api_dashboard():
         products=sorted([{k: (round(v, 2) if k != "product" else v) for k, v in p.items()} for p in prods.values()], key=lambda x: -x["profit"]),
         low_stock=low,
         expense_categories=[dict(category=k, amount=round(v, 2)) for k, v in sorted(by_cat.items(), key=lambda kv: -kv[1])],
-    ))
+    )
 
 
 # ---------------------------------------------------------------- etsy csv import
