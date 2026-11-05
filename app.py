@@ -7,11 +7,11 @@ import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -138,6 +138,26 @@ CREATE TABLE IF NOT EXISTS expenses (
   category TEXT DEFAULT 'Other',
   description TEXT DEFAULT '',
   amount REAL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS supplies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  link TEXT DEFAULT '',
+  unit_cost REAL DEFAULT 0,
+  stock REAL DEFAULT 0,
+  counted_sale_id INTEGER DEFAULT 0,
+  counted_at TEXT DEFAULT '',
+  lead_days INTEGER DEFAULT 0,
+  per_order REAL DEFAULT 0,
+  manual_week REAL DEFAULT 0,
+  notes TEXT DEFAULT '',
+  active INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS product_supplies (
+  product_id INTEGER NOT NULL,
+  supply_id INTEGER NOT NULL,
+  qty REAL DEFAULT 1,
+  PRIMARY KEY (product_id, supply_id)
 );
 """
 
@@ -415,6 +435,7 @@ def api_product(pid):
            one("SELECT 1 AS x FROM batches WHERE product_id=? LIMIT 1", (pid,)):
             return jsonify({"error": "Product has sales/batches. Mark it inactive instead."}), 400
         db().execute("DELETE FROM history WHERE product_id=?", (pid,))
+        db().execute("DELETE FROM product_supplies WHERE product_id=?", (pid,))
         db().execute("DELETE FROM products WHERE id=?", (pid,))
         db().commit()
         return jsonify({"ok": True})
@@ -1704,6 +1725,115 @@ def api_product_shipping(pid):
                  (num(d.get("pack_g")), num(d.get("pack_l")), num(d.get("pack_w")), num(d.get("pack_h")), num(d.get("postage_cost")), pid))
     db().commit()
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------- supplies (packaging etc.)
+# Stock is derived: counted stock minus what sales have used since that count, so editing/deleting a sale self-corrects.
+def supply_usage(sid, since_id=0, since_date=None):
+    q = """SELECT COALESCE(SUM(s.qty*ps.qty),0) AS u FROM sales s JOIN product_supplies ps ON ps.product_id=s.product_id
+           WHERE ps.supply_id=? AND s.id>?"""
+    args = [sid, since_id]
+    if since_date:
+        q += " AND s.date>=?"
+        args.append(since_date)
+    u = one(q, tuple(args))["u"]
+    q2 = "SELECT COUNT(DISTINCT COALESCE(NULLIF(order_ref,''),'s'||id)) AS n FROM sales WHERE id>?"
+    args2 = [since_id]
+    if since_date:
+        q2 += " AND date>=?"
+        args2.append(since_date)
+    return u, one(q2, tuple(args2))["n"]
+
+
+def supply_rows():
+    out = []
+    t = datetime.strptime(today(), "%Y-%m-%d")
+    for s in rows("SELECT * FROM supplies ORDER BY active DESC, name COLLATE NOCASE"):
+        u, n = supply_usage(s["id"], s["counted_sale_id"] or 0)
+        used = u + n * (s["per_order"] or 0)
+        remaining = round((s["stock"] or 0) - used, 2)
+        d30 = (t - timedelta(days=30)).strftime("%Y-%m-%d")
+        u30, n30 = supply_usage(s["id"], 0, d30)
+        first = (one("SELECT MIN(date) AS d FROM sales WHERE date>=?", (d30,)) or {}).get("d")
+        window = max(7, min(30, (t - datetime.strptime(first, "%Y-%m-%d")).days + 1)) if first else 30
+        rate = max((u30 + n30 * (s["per_order"] or 0)) / window, (s["manual_week"] or 0) / 7.0)
+        days_left = round(remaining / rate) if rate > 0 and remaining > 0 else (0 if remaining <= 0 and rate > 0 else None)
+        reorder_by, status = "", "ok"
+        if days_left is not None:
+            reorder_by = (t + timedelta(days=days_left - (s["lead_days"] or 0))).strftime("%Y-%m-%d")
+            gap = days_left - (s["lead_days"] or 0)
+            status = "order_now" if gap <= 0 else "soon" if gap <= 7 else "ok"
+        elif remaining <= 0:
+            status = "order_now"
+        out.append(dict(s, remaining=remaining, rate_per_day=round(rate, 3), days_left=days_left, reorder_by=reorder_by, status=status))
+    return out
+
+
+@app.route("/api/supplies", methods=["GET", "POST"])
+def api_supplies():
+    if request.method == "POST":
+        d = request.get_json(force=True)
+        if not (d.get("name") or "").strip():
+            return jsonify({"error": "Give it a name."}), 400
+        mx = one("SELECT COALESCE(MAX(id),0) AS m FROM sales")["m"]
+        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                     (d["name"].strip(), d.get("link", ""), num(d.get("unit_cost")), num(d.get("stock")), mx, today(),
+                      int(num(d.get("lead_days"))), num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", "")))
+        db().commit()
+        return jsonify({"ok": True})
+    return jsonify(supply_rows())
+
+
+@app.route("/api/supplies/<int:sid>", methods=["PUT", "DELETE"])
+def api_supply(sid):
+    if request.method == "DELETE":
+        db().execute("DELETE FROM product_supplies WHERE supply_id=?", (sid,))
+        db().execute("DELETE FROM supplies WHERE id=?", (sid,))
+        db().commit()
+        return jsonify({"ok": True})
+    d = request.get_json(force=True)
+    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=? WHERE id=?""",
+                 (d.get("name", "").strip(), d.get("link", ""), num(d.get("unit_cost")), int(num(d.get("lead_days"))),
+                  num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""), 1 if d.get("active", True) else 0, sid))
+    if d.get("stock") not in (None, ""):
+        cur = next((r for r in supply_rows() if r["id"] == sid), None)
+        if cur and abs(cur["remaining"] - num(d["stock"])) > 1e-9:
+            mx = one("SELECT COALESCE(MAX(id),0) AS m FROM sales")["m"]
+            db().execute("UPDATE supplies SET stock=?, counted_sale_id=?, counted_at=? WHERE id=?", (num(d["stock"]), mx, today(), sid))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/supplies/<int:sid>/restock", methods=["POST"])
+def api_supply_restock(sid):
+    d = request.get_json(force=True)
+    cur = next((r for r in supply_rows() if r["id"] == sid), None)
+    if not cur:
+        return jsonify({"error": "not found"}), 404
+    qty = num(d.get("qty"))
+    new = max(cur["remaining"], 0) + qty if d.get("mode") != "set" else qty
+    mx = one("SELECT COALESCE(MAX(id),0) AS m FROM sales")["m"]
+    db().execute("UPDATE supplies SET stock=?, counted_sale_id=?, counted_at=? WHERE id=?", (new, mx, today(), sid))
+    cost = num(d.get("cost"))
+    if d.get("mode") != "set" and cost > 0:
+        db().execute("INSERT INTO expenses(date,category,description,amount) VALUES(?,?,?,?)",
+                     (today(), "Packaging", f"Restock: {cur['name']} x{qty:g}", cost))
+        if qty > 0:
+            db().execute("UPDATE supplies SET unit_cost=? WHERE id=?", (round(cost / qty, 4), sid))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/products/<int:pid>/supplies", methods=["GET", "PUT"])
+def api_product_supplies(pid):
+    if request.method == "PUT":
+        db().execute("DELETE FROM product_supplies WHERE product_id=?", (pid,))
+        for r in request.get_json(force=True):
+            if r.get("supply_id") and num(r.get("qty")) > 0:
+                db().execute("INSERT OR REPLACE INTO product_supplies(product_id,supply_id,qty) VALUES(?,?,?)", (pid, int(r["supply_id"]), num(r["qty"])))
+        db().commit()
+    return jsonify(rows("SELECT supply_id,qty FROM product_supplies WHERE product_id=?", (pid,)))
 
 
 init_db()
