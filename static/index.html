@@ -558,7 +558,7 @@ async function measuresView() {
   ${cats.map(c => `<h2>${esc(c)}</h2><div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">${list.filter(m => (m.category || 'Uncategorised') === c).map(m => `<div class="card">
     <div style="font-weight:600;font-size:15px">${esc(m.name)}</div>
     ${m.product_id ? `<div class="mute" style="font-size:12px">Product: ${esc((PRODUCTS.find(p => p.id === m.product_id) || {}).name || '')}</div>` : ''}
-    <table style="margin:8px 0;font-size:13px;width:100%">${m.values.map(v => `<tr><td class="mute">${esc(v.label)}</td><td style="text-align:right;font-weight:500">${esc(v.value)} ${esc(v.unit)}</td></tr>`).join('')}</table>
+    <table style="margin:8px 0;font-size:13px;width:100%">${m.values.map(v => `<tr><td class="mute">${esc(v.label)}</td><td style="text-align:right;font-weight:500">${v.value ? esc(v.value) + ' ' + esc(v.unit) : '<span class="mute">—</span>'}</td></tr>`).join('')}</table>
     ${m.notes ? `<div class="mute" style="font-size:12px;white-space:pre-wrap">${esc(m.notes)}</div>` : ''}
     <div class="bar" style="margin:10px 0 0"><button class="g" onclick="editMeasure(${m.id})">Edit</button><button class="g" onclick="dupMeasure(${m.id})">Duplicate</button><button class="g" onclick="delMeasure(${m.id})">Delete</button></div></div>`).join('')}</div>`).join('') || '<p class="mute">Nothing here yet — add your first item.</p>'}`;
   $('#mq').oninput = e => { localStorage.measQ = e.target.value; measuresView(); };

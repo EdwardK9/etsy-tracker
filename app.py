@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.23.0"
+VERSION = "0.23.1"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -2297,7 +2297,54 @@ def api_backup_github():
     return jsonify({"ok": msg.startswith("OK"), "status": msg})
 
 
+def seed_measurements():
+    """One-time starter checklist of items to measure (values left blank for the user to fill in)."""
+    con = sqlite3.connect(DB_PATH)
+    done = con.execute("SELECT value FROM settings WHERE key='measure_seeded'").fetchone()
+    if not done:
+        PHOTO = ""
+        batt = [("Rail head width (widest part of the T)", "mm"), ("Rail neck width (narrow part under the head)", "mm"),
+                ("Rail head thickness", "mm"), ("Neck height (seating face to underside of head)", "mm"),
+                ("Rail length in slide direction", "mm"), ("Which end goes in first / lead-in taper", ""),
+                ("Battery body width", "mm"), ("Battery body length", "mm"), ("Battery body height", "mm"),
+                ("Latch button size", "mm"), ("Latch distance from front of rail", "mm"), ("Latch distance from side edge", "mm"),
+                ("Lock notch position", "mm"), ("Lock notch depth", "mm"), ("Battery weight", "g"), ("Capacity (2.0 / 4.0 / 5.0 Ah)", "Ah"),
+                ("Photo: rail from the front", PHOTO), ("Photo: rail from the side", PHOTO), ("Photo: underside", PHOTO)]
+        chg = [("Length", "mm"), ("Width", "mm"), ("Height", "mm"), ("Cable exit: which face", ""), ("Cable exit: distance from edges", "mm"),
+               ("Cable diameter", "mm"), ("Wall-mount slot spacing", "mm"), ("Wall-mount slot width", "mm"), ("Wall-mount slot depth", "mm"),
+               ("Battery bay opening (keep clear)", "mm"), ("Feet / vents that must stay clear", ""),
+               ("Photo: front", PHOTO), ("Photo: back", PHOTO), ("Photo: underside", PHOTO), ("Photo: side", PHOTO)]
+        port = [("Port slot head width", "mm"), ("Port slot neck width", "mm"), ("Port slot depth", "mm"), ("Port length in slide direction", "mm"),
+                ("Latch position inside the port", "mm"), ("Tool body hang below the port (wall mount clearance)", "mm"),
+                ("Tool length", "mm"), ("Tool foot width", "mm"), ("Tool weight", "g"),
+                ("Photo: port from below", PHOTO), ("Photo: tool from the side", PHOTO), ("Photo: tool from the front", PHOTO)]
+        hose = [("Hose end outside diameter at tip", "mm"), ("Hose end inside diameter at tip", "mm"), ("Hose end outside diameter 30 mm back", "mm"),
+                ("Hose end inside diameter 30 mm back", "mm"), ("Taper", "")]
+        inlet = [("Vac inlet outside diameter", "mm"), ("Hose fit (twists on / pushes on / clips)", "")]
+        dport = [("Dust port outside diameter", "mm"), ("Dust port inside diameter", "mm"), ("Dust port length", "mm"), ("Dust port taper", ""),
+                 ("Lug / slot / flat on the port", "")]
+        items = []
+        for b in ("Einhell PXC", "Titan TXP", "Erbauer / Evolution EXT"):
+            items.append((b + " battery", "1. Batteries", batt))
+        for b in ("Einhell PXC", "Titan TXP", "Erbauer / Evolution EXT"):
+            for k in ("single", "dual"):
+                items.append((b + " charger (" + k + ")", "2. Chargers", chg))
+        for n in ("Cheapest Titan tool", "Cheapest Erbauer tool", "Einhell drill", "Einhell impact driver"):
+            items.append((n + " — battery port", "3. Tool battery ports", port))
+        items += [("Vac hose end (one per vac)", "4. Dust extraction", hose), ("Vac inlet (one per vac)", "4. Dust extraction", inlet),
+                  ("Tool dust port (one per tool)", "4. Dust extraction", dport),
+                  ("Wall & screws", "5. Mounting", [("Screws you normally use", ""), ("Wall material", "")])]
+        for name, cat, vals in items:
+            iid = con.execute("INSERT INTO measure_items(name,category,notes) VALUES(?,?,?)", (name, cat, "")).lastrowid
+            for i, (l, u) in enumerate(vals):
+                con.execute("INSERT INTO measure_values(item_id,label,value,unit,rank) VALUES(?,?,?,?,?)", (iid, l, "", u, i))
+        con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('measure_seeded','1')")
+        con.commit()
+    con.close()
+
+
 init_db()
+seed_measurements()
 threading.Thread(target=_backup_loop, daemon=True).start()
 
 if __name__ == "__main__":
