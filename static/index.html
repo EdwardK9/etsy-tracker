@@ -546,45 +546,72 @@ async function filesView() {
   document.querySelectorAll('[data-url]').forEach(i => i.onchange = () => safe(async () => { await api('POST', `/api/products/${i.dataset.url}/model-url`, {url: i.value}); toast('Saved'); filesView(); }));
 }
 let MEAS = [];
-const MEAS_PRESETS = ['Width', 'Height', 'Depth', 'Diameter', 'Hole spacing', 'Slot width', 'Wall thickness', 'Weight'];
+const measDone = m => m.values.filter(v => v.value).length;
 async function measuresView() {
   MEAS = await api('GET', '/api/measurements');
   if (!PRODUCTS.length) PRODUCTS = await api('GET', '/api/products');
-  const q = (localStorage.measQ || '').toLowerCase();
-  const list = MEAS.filter(m => !q || (m.name + ' ' + m.category + ' ' + m.notes + ' ' + m.values.map(v => v.label).join(' ')).toLowerCase().includes(q));
-  const cats = [...new Set(list.map(m => m.category || 'Uncategorised'))];
-  $('#main').innerHTML = `<div class="top"><h1>Measurements</h1><span class="sp"></span><input id="mq" placeholder="Search…" value="${esc(localStorage.measQ || '')}" style="max-width:220px"><button class="b" onclick="editMeasure()">+ New item</button></div>
-  <div class="note">A reference library of dimensions — tool bodies, battery slots, mounting holes, anything you design around. Add any measurements you like, link an item to a product, and search by name or label.</div>
-  ${cats.map(c => `<h2>${esc(c)}</h2><div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">${list.filter(m => (m.category || 'Uncategorised') === c).map(m => `<div class="card">
-    <div style="font-weight:600;font-size:15px">${esc(m.name)}</div>
-    ${m.product_id ? `<div class="mute" style="font-size:12px">Product: ${esc((PRODUCTS.find(p => p.id === m.product_id) || {}).name || '')}</div>` : ''}
-    <table style="margin:8px 0;font-size:13px;width:100%">${m.values.map(v => `<tr><td class="mute">${esc(v.label)}</td><td style="text-align:right;font-weight:500">${v.value ? esc(v.value) + ' ' + esc(v.unit) : '<span class="mute">—</span>'}</td></tr>`).join('')}</table>
-    ${m.notes ? `<div class="mute" style="font-size:12px;white-space:pre-wrap">${esc(m.notes)}</div>` : ''}
-    <div class="bar" style="margin:10px 0 0"><button class="g" onclick="editMeasure(${m.id})">Edit</button><button class="g" onclick="dupMeasure(${m.id})">Duplicate</button><button class="g" onclick="delMeasure(${m.id})">Delete</button></div></div>`).join('')}</div>`).join('') || '<p class="mute">Nothing here yet — add your first item.</p>'}`;
-  $('#mq').oninput = e => { localStorage.measQ = e.target.value; measuresView(); };
+  $('#main').innerHTML = `<div class="top"><h1>Measurements</h1><span class="sp"></span><button class="b" onclick="newMeasure()">+ New item</button></div>
+  <div style="display:grid;grid-template-columns:300px 1fr;gap:18px;align-items:start">
+    <div><input id="mq" placeholder="Search…" value="${esc(localStorage.measQ || '')}" style="margin-bottom:10px"><div id="mlist"></div></div>
+    <div id="mdet"></div></div>`;
+  $('#mq').oninput = e => { localStorage.measQ = e.target.value; measList(); };
+  if (!MEAS.find(m => m.id == localStorage.measSel)) localStorage.measSel = MEAS.length ? MEAS[0].id : '';
+  measList(); measDetail();
 }
-async function dupMeasure(id) { const m = MEAS.find(x => x.id === id); await safe(async () => { await api('POST', '/api/measurements', {...m, name: m.name + ' (copy)'}); measuresView(); }); }
-async function delMeasure(id) { if (confirm('Delete this item?')) await safe(async () => { await api('DELETE', `/api/measurements/${id}`); measuresView(); }); }
-function editMeasure(id) {
-  const m = MEAS.find(x => x.id === id) || {name: '', category: '', product_id: null, notes: '', values: [{label: '', value: '', unit: 'mm'}]};
+function measList() {
+  const q = (localStorage.measQ || '').toLowerCase();
+  const list = MEAS.filter(m => !q || (m.name + ' ' + m.category + ' ' + m.notes + ' ' + m.values.map(v => v.label + ' ' + v.value).join(' ')).toLowerCase().includes(q));
+  const cats = [...new Set(list.map(m => m.category || 'Uncategorised'))];
+  $('#mlist').innerHTML = cats.map(c => `<div class="mute" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:12px 0 4px">${esc(c)}</div>` +
+    list.filter(m => (m.category || 'Uncategorised') === c).map(m => `<div data-mid="${m.id}" style="display:flex;gap:8px;align-items:center;padding:8px 10px;border-radius:9px;cursor:pointer;border:1px solid ${m.id == localStorage.measSel ? 'var(--accent,#ff6a2b)' : 'transparent'};background:${m.id == localStorage.measSel ? 'var(--card)' : 'transparent'}">
+      <span style="flex:1;font-size:13px">${esc(m.name)}</span><span class="${measDone(m) === m.values.length && m.values.length ? 'good' : 'mute'}" style="font-size:11px">${measDone(m)}/${m.values.length}</span></div>`).join('')).join('') || '<p class="mute">Nothing found.</p>';
+  document.querySelectorAll('[data-mid]').forEach(el => el.onclick = () => { localStorage.measSel = el.dataset.mid; measList(); measDetail(); });
+}
+function measDetail() {
+  const m = MEAS.find(x => x.id == localStorage.measSel), box = $('#mdet');
+  if (!m) { box.innerHTML = '<p class="mute">Add your first item.</p>'; return; }
   const cats = [...new Set(MEAS.map(x => x.category).filter(Boolean))];
-  const row = v => `<div class="mrow" style="display:grid;grid-template-columns:1fr 90px 60px 28px;gap:6px;margin-bottom:6px"><input class="ml" list="mpre" placeholder="e.g. Slot width" value="${esc(v.label)}"><input class="mv" value="${esc(v.value)}" placeholder="value"><input class="mu" value="${esc(v.unit)}"><button class="g" type="button" onclick="this.parentNode.remove()">×</button></div>`;
-  const md = modal(`<h2>${id ? 'Edit' : 'New'} item</h2><div class="grid">
-    <div class="full"><label>Name</label><input id="m_name" value="${esc(m.name)}" placeholder="e.g. Einhell 18V battery"></div>
-    <div><label>Category</label><input id="m_cat" list="mcats" value="${esc(m.category)}" placeholder="e.g. Batteries"><datalist id="mcats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
-    <div><label>Linked product (optional)</label><select id="m_prod"><option value="">— none —</option>${prodOptions(m.product_id, false)}</select></div>
-    <div class="full"><label>Measurements</label><datalist id="mpre">${MEAS_PRESETS.map(p => `<option value="${p}">`).join('')}</datalist><div id="m_rows">${m.values.map(row).join('')}</div><button class="g" type="button" id="m_add">+ Add measurement</button></div>
-    <div class="full"><label>Notes</label><textarea id="m_notes" rows="3">${esc(m.notes)}</textarea></div></div>
-  <div class="bar" style="margin:14px 0 0"><button class="b" id="m_save">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
-  $('#m_add', md).onclick = () => $('#m_rows', md).insertAdjacentHTML('beforeend', row({label: '', value: '', unit: 'mm'}));
-  $('#m_save', md).onclick = () => safe(async () => {
-    const values = [...md.querySelectorAll('.mrow')].map(r => ({label: $('.ml', r).value, value: $('.mv', r).value, unit: $('.mu', r).value}));
-    const d = {name: $('#m_name', md).value, category: $('#m_cat', md).value, product_id: $('#m_prod', md).value || null, notes: $('#m_notes', md).value, values};
-    if (!d.name.trim()) throw new Error('Give it a name');
-    id ? await api('PUT', `/api/measurements/${id}`, d) : await api('POST', '/api/measurements', d);
-    md.remove(); measuresView();
+  const row = v => `<div class="mrow" style="display:grid;grid-template-columns:1fr 130px 60px 28px;gap:6px;margin-bottom:5px"><input class="ml" value="${esc(v.label)}"><input class="mv" value="${esc(v.value)}" placeholder="—"><input class="mu" value="${esc(v.unit)}"><button class="g" type="button" title="Remove row">×</button></div>`;
+  box.innerHTML = `<div class="card">
+    <div class="grid"><div><label>Name</label><input id="m_name" value="${esc(m.name)}"></div>
+    <div><label>Category</label><input id="m_cat" list="mcats" value="${esc(m.category)}"><datalist id="mcats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
+    <div class="full"><label>Linked product</label><select id="m_prod"><option value="">— none —</option>${prodOptions(m.product_id, false)}</select></div></div>
+    <h2 style="margin:16px 0 8px">Measurements <span class="mute" id="m_state" style="font-size:12px;font-weight:400"></span></h2>
+    <div id="m_rows">${m.values.map(row).join('')}</div>
+    <button class="g" type="button" id="m_add">+ Add row</button>
+    <div style="margin-top:14px"><label>Notes</label><textarea id="m_notes" rows="3">${esc(m.notes)}</textarea></div>
+    <div class="bar" style="margin:14px 0 0"><button class="g" id="m_next">Next item →</button><span class="sp"></span><button class="g" id="m_dup">Duplicate</button><button class="g" id="m_del">Delete</button></div></div>`;
+  let t;
+  const save = () => {
+    clearTimeout(t); $('#m_state').textContent = 'saving…';
+    const values = [...box.querySelectorAll('.mrow')].map(r => ({label: $('.ml', r).value, value: $('.mv', r).value, unit: $('.mu', r).value}));
+    const d = {name: $('#m_name').value || 'Untitled', category: $('#m_cat').value, product_id: $('#m_prod').value || null, notes: $('#m_notes').value, values};
+    t = setTimeout(() => safe(async () => {
+      await api('PUT', `/api/measurements/${m.id}`, d);
+      Object.assign(m, d, {values: values.filter(v => v.label.trim())});
+      const st = $('#m_state'); if (st && localStorage.measSel == m.id) st.textContent = 'saved ✓';
+      measList();
+    }), 400);
+  };
+  box.oninput = box.onchange = save;
+  box.onkeydown = e => { if (e.key === 'Enter' && e.target.classList.contains('mv')) { e.preventDefault(); const r = e.target.closest('.mrow').nextElementSibling; (r ? r.querySelector('.mv') : $('#m_notes')).focus(); } };
+  box.onclick = e => { const b = e.target.closest('button.g[title]'); if (b) { b.parentNode.remove(); save(); } };
+  $('#m_add').onclick = () => { $('#m_rows').insertAdjacentHTML('beforeend', row({label: '', value: '', unit: 'mm'})); $('#m_rows').lastChild.querySelector('.ml').focus(); };
+  $('#m_next').onclick = () => { const i = MEAS.findIndex(x => x.id === m.id); const n = MEAS[(i + 1) % MEAS.length]; localStorage.measSel = n.id; measList(); measDetail(); };
+  $('#m_dup').onclick = () => safe(async () => { const r = await api('POST', '/api/measurements', {...m, name: m.name + ' (copy)'}); localStorage.measSel = r.id; measuresView(); });
+  $('#m_del').onclick = () => confirm('Delete this item?') && safe(async () => { await api('DELETE', `/api/measurements/${m.id}`); localStorage.measSel = ''; measuresView(); });
+  box.querySelector('.mv') && box.querySelector('.mv').focus();
+}
+function newMeasure() {
+  const md = modal(`<h2>New item</h2><div class="grid"><div class="full"><label>Name</label><input id="n_name" placeholder="e.g. Einhell 18V battery"></div>
+    <div class="full"><label>Category</label><input id="n_cat" value="${esc((MEAS.find(x => x.id == localStorage.measSel) || {}).category || '')}"></div></div>
+  <div class="bar" style="margin:14px 0 0"><button class="b" id="n_save">Create</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  $('#n_save', md).onclick = () => safe(async () => {
+    const r = await api('POST', '/api/measurements', {name: $('#n_name', md).value || 'Untitled', category: $('#n_cat', md).value, values: [{label: 'Width', value: '', unit: 'mm'}, {label: 'Height', value: '', unit: 'mm'}, {label: 'Depth', value: '', unit: 'mm'}]});
+    localStorage.measSel = r.id; md.remove(); measuresView();
   });
 }
+
 async function dupTemplate(id) { const t = TEMPLATES.find(x => x.id === id); await safe(async () => { await api('POST', '/api/templates', {...t, name: t.name + ' (copy)'}); templates(); }); }
 async function delTemplate(id) { if (confirm('Delete this template?')) await safe(async () => { await api('DELETE', `/api/templates/${id}`); templates(); }); }
 function editTemplate(id) {
