@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.18.0"
+VERSION = "0.19.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -44,6 +44,9 @@ DEFAULT_SETTINGS = {
     "etsy_last_sync": "",
     "etsy_scopes": "",
     "listing_shipping_profile_id": "",
+    "listing_return_policy_id": "",
+    "listing_shop_section_id": "",
+    "listing_auto_renew": "0",
     "listing_readiness_state_id": "",
     "listing_who_made": "i_did",
     "listing_when_made": "made_to_order",
@@ -181,6 +184,7 @@ PRODUCT_MIGRATIONS = [
     ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
     ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
     ("plate_energy", "REAL DEFAULT 0"), ("labour_minutes", "INTEGER DEFAULT 0"),
+    ("l_return_policy", "TEXT DEFAULT ''"), ("l_shop_section", "TEXT DEFAULT ''"),
     ("l_ship_profile", "TEXT DEFAULT ''"), ("l_readiness", "TEXT DEFAULT ''"),
     ("item_l", "REAL DEFAULT 0"), ("item_w", "REAL DEFAULT 0"), ("item_h", "REAL DEFAULT 0"),
     ("pack_g", "REAL DEFAULT 0"), ("pack_l", "REAL DEFAULT 0"), ("pack_w", "REAL DEFAULT 0"), ("pack_h", "REAL DEFAULT 0"),
@@ -269,6 +273,9 @@ def init_db():
     for col, decl in SALE_MIGRATIONS:
         if col not in have_s:
             con.execute(f"ALTER TABLE sales ADD COLUMN {col} {decl}")
+    have_im = {r[1] for r in con.execute("PRAGMA table_info(product_images)")}
+    if "etsy_image_id" not in have_im:
+        con.execute("ALTER TABLE product_images ADD COLUMN etsy_image_id INTEGER")
     have_sup = {r[1] for r in con.execute("PRAGMA table_info(supplies)")}
     for col in ("box_l", "box_w", "box_h", "box_g"):
         if col not in have_sup:
@@ -1228,6 +1235,32 @@ def api_etsy_processing():
     return jsonify(out)
 
 
+@app.route("/api/etsy/return-policies")
+def api_etsy_returns():
+    shop = settings().get("etsy_shop_id")
+    try:
+        d = etsy_get(f"/shops/{shop}/policies/return")
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    out = []
+    for r in d.get("results", []):
+        t = ("Accepts returns" if r.get("accepts_returns") else "No returns") + (", exchanges" if r.get("accepts_exchanges") else "")
+        if r.get("accepts_returns") and r.get("return_deadline"):
+            t += f" · {r['return_deadline']} days"
+        out.append({"id": r["return_policy_id"], "title": t})
+    return jsonify(out)
+
+
+@app.route("/api/etsy/shop-sections")
+def api_etsy_sections():
+    shop = settings().get("etsy_shop_id")
+    try:
+        d = etsy_get(f"/shops/{shop}/sections")
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify([{"id": r["shop_section_id"], "title": r.get("title", "")} for r in d.get("results", [])])
+
+
 def load_taxonomy():
     if TAX_CACHE["nodes"] is not None:
         return TAX_CACHE["nodes"]
@@ -1324,11 +1357,12 @@ def api_listing_save(pid):
     if not p:
         return jsonify({"error": "not found"}), 404
     db().execute("""UPDATE products SET l_title=?,l_desc=?,l_tags=?,l_materials=?,l_qty=?,taxonomy_id=?,taxonomy_name=?,
-                    l_var_name=?,l_var_options=?,l_personalisation=?,l_ship_profile=?,l_readiness=? WHERE id=?""",
+                    l_var_name=?,l_var_options=?,l_personalisation=?,l_ship_profile=?,l_readiness=?,l_return_policy=?,l_shop_section=? WHERE id=?""",
                  (d.get("l_title", "")[:140], d.get("l_desc", ""), d.get("l_tags", ""), d.get("l_materials", ""),
                   int(num(d.get("l_qty"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", ""),
                   d.get("l_var_name", ""), d.get("l_var_options", ""), d.get("l_personalisation", ""),
-                  str(d.get("l_ship_profile") or ""), str(d.get("l_readiness") or ""), pid))
+                  str(d.get("l_ship_profile") or ""), str(d.get("l_readiness") or ""),
+                  str(d.get("l_return_policy") or ""), str(d.get("l_shop_section") or ""), pid))
     db().commit()
     return jsonify({"ok": True})
 
@@ -1394,38 +1428,26 @@ def clean_list(text, maxlen, maxn):
     return out[:maxn]
 
 
-@app.route("/api/products/<int:pid>/etsy-draft", methods=["POST"])
-def api_etsy_draft(pid):
-    s = settings()
-    p = one("SELECT * FROM products WHERE id=?", (pid,))
-    if not p:
-        return jsonify({"error": "not found"}), 404
-    if p["etsy_listing_id"]:
-        return jsonify({"error": "A draft already exists for this product. Open it on Etsy to edit it."}), 400
-    if "listings_w" not in (s.get("etsy_scopes") or ""):
-        return jsonify({"error": "Etsy needs re-authorising with permission to create listings (Settings → Etsy connection)."}), 400
+def listing_inputs(s, p):
+    """Everything about the listing that comes from our app (shared by create-draft and update)."""
+    ship_profile = p["l_ship_profile"] or s.get("listing_shipping_profile_id")
+    readiness = p["l_readiness"] or s.get("listing_readiness_state_id")
     problems = []
     if not p["taxonomy_id"]:
         problems.append("choose a category")
     if num(p["price"]) <= 0:
         problems.append("set a price on the product")
-    ship_profile = p["l_ship_profile"] or s.get("listing_shipping_profile_id")
-    readiness = p["l_readiness"] or s.get("listing_readiness_state_id")
     if not ship_profile:
         problems.append("choose a shipping profile (here, or a default in Settings)")
-    if problems:
-        return jsonify({"error": "Before creating the draft: " + ", ".join(problems) + "."}), 400
     title = (p["l_title"] or p["name"]).strip()[:140]
     desc = p["l_desc"] or (s.get("listing_desc_template") or "{name}").replace("{name}", p["name"])
     tags = clean_list((p["l_tags"] or "") + "," + (s.get("listing_default_tags") or ""), 20, 13)
     mats = clean_list(p["l_materials"] or s.get("listing_materials"), 45, 13)
     qty = int(p["l_qty"] or num(s.get("listing_quantity"), 1)) or 1
-    form = {"quantity": qty, "title": title, "description": desc, "price": f"{p['price']:.2f}",
-            "who_made": s.get("listing_who_made") or "i_did", "when_made": s.get("listing_when_made") or "made_to_order",
-            "taxonomy_id": p["taxonomy_id"], "shipping_profile_id": ship_profile,
-            "type": "physical", "is_supply": "false", "should_auto_renew": "false"}
-    if readiness:
-        form["readiness_state_id"] = readiness
+    form = {"title": title, "description": desc, "who_made": s.get("listing_who_made") or "i_did",
+            "when_made": s.get("listing_when_made") or "made_to_order", "taxonomy_id": p["taxonomy_id"],
+            "shipping_profile_id": ship_profile, "type": "physical", "is_supply": "false",
+            "should_auto_renew": "true" if s.get("listing_auto_renew") == "1" else "false"}
     if tags:
         form["tags"] = ",".join(tags)
     if mats:
@@ -1434,6 +1456,82 @@ def api_etsy_draft(pid):
     if per_item_g > 0:
         form["item_weight"] = round(per_item_g, 1)
         form["item_weight_unit"] = "g"
+    if num(p["item_l"]) > 0 and num(p["item_w"]) > 0 and num(p["item_h"]) > 0:
+        form.update({"item_length": p["item_l"], "item_width": p["item_w"], "item_height": p["item_h"], "item_dimensions_unit": "cm"})
+    rp = p["l_return_policy"] or s.get("listing_return_policy_id")
+    if rp:
+        form["return_policy_id"] = rp
+    sec = p["l_shop_section"] or s.get("listing_shop_section_id")
+    if sec:
+        form["shop_section_id"] = sec
+    return form, problems, qty, readiness
+
+
+def upload_missing_images(s, lid, pid):
+    warnings, n = [], 0
+    for im in rows("SELECT * FROM product_images WHERE product_id=? AND etsy_image_id IS NULL ORDER BY rank,id", (pid,)):
+        path = os.path.join(IMG_DIR, im["filename"])
+        try:
+            ctype = mimetypes.guess_type(path)[0] or "image/jpeg"
+            r = etsy_send("POST", f"/shops/{s['etsy_shop_id']}/listings/{lid}/images",
+                          fields={"rank": str(im["rank"] if im["rank"] > 0 else 1)},
+                          files={"image": (im["filename"], open(path, "rb").read(), ctype)})
+            db().execute("UPDATE product_images SET etsy_image_id=? WHERE id=?", (r.get("listing_image_id") or 0, im["id"]))
+            n += 1
+        except (EtsyError, OSError) as e:
+            warnings.append("Photo not uploaded: " + str(e))
+    db().commit()
+    return n, warnings
+
+
+def push_inventory(s, lid, p, qty, readiness):
+    """Set price / quantity / variations on the listing. Returns how many variation options were sent."""
+    options = [o.strip() for o in (p["l_var_options"] or "").split("|") if o.strip()]
+    vname = re.sub(r"[()]", "", (p["l_var_name"] or "").strip())[:45]
+    price = round(float(p["price"]), 2)
+
+    def offering():
+        off = {"price": price, "quantity": qty, "is_enabled": True}
+        if readiness:
+            off["readiness_state_id"] = int(readiness)
+        return off
+
+    products, seen = [], set()
+    if options and vname:
+        for o in options:
+            o = re.sub(r"[()]", "", o).strip()[:20]
+            if not o or o.lower() in seen:
+                continue
+            seen.add(o.lower())
+            prod = {"property_values": [{"property_id": 513, "property_name": vname, "value_ids": [], "values": [o]}], "offerings": [offering()]}
+            if p["sku"]:
+                prod["sku"] = (p["sku"] + "-" + re.sub(r"[^A-Za-z0-9]+", "", o).upper())[:32]
+            products.append(prod)
+    if not products:
+        prod = {"property_values": [], "offerings": [offering()]}
+        if p["sku"]:
+            prod["sku"] = p["sku"][:32]
+        products = [prod]
+    etsy_send("PUT", f"/listings/{lid}/inventory", json_body={"products": products, "price_on_property": [], "quantity_on_property": [], "sku_on_property": []})
+    return len(seen)
+
+
+@app.route("/api/products/<int:pid>/etsy-draft", methods=["POST"])
+def api_etsy_draft(pid):
+    s = settings()
+    p = one("SELECT * FROM products WHERE id=?", (pid,))
+    if not p:
+        return jsonify({"error": "not found"}), 404
+    if p["etsy_listing_id"]:
+        return jsonify({"error": "A draft already exists for this product — use “Update on Etsy” instead."}), 400
+    if "listings_w" not in (s.get("etsy_scopes") or ""):
+        return jsonify({"error": "Etsy needs re-authorising with permission to create listings (Settings → Etsy connection)."}), 400
+    form, problems, qty, readiness = listing_inputs(s, p)
+    if problems:
+        return jsonify({"error": "Before creating the draft: " + ", ".join(problems) + "."}), 400
+    form.update({"quantity": qty, "price": f"{p['price']:.2f}"})
+    if readiness:
+        form["readiness_state_id"] = readiness
     try:
         res = etsy_send("POST", f"/shops/{s['etsy_shop_id']}/listings", form=form)
     except EtsyError as e:
@@ -1442,44 +1540,42 @@ def api_etsy_draft(pid):
     url = f"https://www.etsy.com/your/shops/me/tools/listings/{lid}"
     db().execute("UPDATE products SET etsy_listing_id=?, etsy_listing_url=? WHERE id=?", (lid, url, pid))
     db().commit()
+    n_img, warnings = upload_missing_images(s, lid, pid)
+    nvar = 0
+    try:
+        nvar = push_inventory(s, lid, p, qty, readiness)
+    except Exception as e:
+        warnings.append("Variations/inventory weren't added: " + str(e))
+    return jsonify({"ok": True, "listing_id": lid, "url": url, "warnings": warnings, "photos": n_img,
+                    "personalisation": p["l_personalisation"] or "", "variations": nvar})
+
+
+@app.route("/api/products/<int:pid>/etsy-update", methods=["POST"])
+def api_etsy_update(pid):
+    """Push the current listing details (text, tags, category, shipping, dimensions, price, stock, variations, new photos) to the existing Etsy listing."""
+    s = settings()
+    p = one("SELECT * FROM products WHERE id=?", (pid,))
+    if not p or not p["etsy_listing_id"]:
+        return jsonify({"error": "This product has no Etsy listing yet."}), 400
+    if "listings_w" not in (s.get("etsy_scopes") or ""):
+        return jsonify({"error": "Etsy needs re-authorising with permission to edit listings (Settings → Etsy connection)."}), 400
+    form, problems, qty, readiness = listing_inputs(s, p)
+    if problems:
+        return jsonify({"error": "Before updating: " + ", ".join(problems) + "."}), 400
+    lid = p["etsy_listing_id"]
+    form.pop("type", None)
     warnings = []
-    for im in rows("SELECT * FROM product_images WHERE product_id=? ORDER BY rank,id", (pid,)):
-        path = os.path.join(IMG_DIR, im["filename"])
-        try:
-            ctype = mimetypes.guess_type(path)[0] or "image/jpeg"
-            etsy_send("POST", f"/shops/{s['etsy_shop_id']}/listings/{lid}/images",
-                      fields={"rank": str(im["rank"] if im["rank"] > 0 else 1)},
-                      files={"image": (im["filename"], open(path, "rb").read(), ctype)})
-        except (EtsyError, OSError) as e:
-            warnings.append(str(e))
-    options = [o.strip() for o in (p["l_var_options"] or "").split("|") if o.strip()]
-    if options and (p["l_var_name"] or "").strip():
-        try:
-            push_variations(s, lid, p, options, qty)
-        except EtsyError as e:
-            warnings.append("Variations weren't added: " + str(e))
-    return jsonify({"ok": True, "listing_id": lid, "url": url, "warnings": warnings,
-                    "personalisation": p["l_personalisation"] or "", "variations": len(options)})
-
-
-def push_variations(s, lid, p, options, qty):
-    vname = re.sub(r"[()]", "", p["l_var_name"].strip())[:45]
-    seen, products = set(), []
-    for o in options:
-        o = re.sub(r"[()]", "", o).strip()[:20]
-        if not o or o.lower() in seen:
-            continue
-        seen.add(o.lower())
-        off = {"price": round(float(p["price"]), 2), "quantity": qty, "is_enabled": True}
-        if readiness:
-            off["readiness_state_id"] = int(readiness)
-        prod = {"property_values": [{"property_id": 513, "property_name": vname, "value_ids": [], "values": [o]}], "offerings": [off]}
-        if p["sku"]:
-            prod["sku"] = (p["sku"] + "-" + re.sub(r"[^A-Za-z0-9]+", "", o).upper())[:32]
-        products.append(prod)
-    if not products:
-        return
-    etsy_send("PUT", f"/listings/{lid}/inventory", json_body={"products": products, "price_on_property": [], "quantity_on_property": [], "sku_on_property": []})
+    try:
+        etsy_send("PATCH", f"/shops/{s['etsy_shop_id']}/listings/{lid}", form=form)
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    nvar = 0
+    try:
+        nvar = push_inventory(s, lid, p, qty, readiness)
+    except Exception as e:
+        warnings.append("Price/stock/variations weren't updated: " + str(e))
+    n_img, w2 = upload_missing_images(s, lid, pid)
+    return jsonify({"ok": True, "warnings": warnings + w2, "photos": n_img, "variations": nvar})
 
 
 @app.route("/api/products/<int:pid>/unlink-listing", methods=["POST"])

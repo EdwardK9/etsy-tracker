@@ -354,7 +354,7 @@ async function listings() {
     <td>${p.etsy_listing_id ? `<span class="pill">${p.etsy_state ? esc(p.etsy_state) : 'Draft on Etsy'}</span>` : '<span class="mute">Not created</span>'}</td>
     <td class="r">${p.etsy_listing_id && p.etsy_synced ? p.etsy_views : '—'}</td><td class="r">${p.etsy_listing_id && p.etsy_synced ? p.etsy_favs : '—'}</td>
     <td class="r">${p.etsy_listing_id && p.etsy_synced ? `${p.etsy_qty ?? '—'} / ${p.stock} ${S.etsy_can_list && p.stock > 0 && p.etsy_qty !== p.stock ? `<button class="g" title="Set Etsy quantity to your stock" onclick="pushStock(${p.id})">push</button>` : ''}` : '—'}</td>
-    <td>${p.etsy_listing_id ? `<a class="g" style="text-decoration:none;display:inline-block;padding:5px 10px;border-radius:8px;border:1px solid var(--line);color:var(--text)" href="${esc(p.etsy_listing_url)}" target="_blank">Open on Etsy ↗</a>` : `<button class="g" onclick="editListing(${p.id})">Edit / create draft</button>`}</td></tr>`).join('') || '<tr><td colspan=9 class="mute">Add a product first.</td></tr>'}
+    <td style="white-space:nowrap"><button class="g" onclick="editListing(${p.id})">${p.etsy_listing_id ? 'Edit / update' : 'Edit / create draft'}</button>${p.etsy_listing_id ? ` <a class="g" style="text-decoration:none;display:inline-block;padding:5px 10px;border-radius:8px;border:1px solid var(--line);color:var(--text)" href="${esc(p.etsy_listing_url)}" target="_blank">Open on Etsy ↗</a>` : ''}</td></tr>`).join('') || '<tr><td colspan=9 class="mute">Add a product first.</td></tr>'}
   </table></div>`;
 }
 
@@ -377,6 +377,8 @@ async function editListing(id) {
     <div><label>Stock quantity</label><input id="l_qty" type="number" min="1" value="${p.l_qty || S.listing_quantity || 1}"></div>
     <div><label>Shipping profile <span class="mute">(pick a bigger-parcel profile if needed)</span></label><select id="l_ship"><option value="${esc(p.l_ship_profile || '')}">Loading…</option></select></div>
     <div><label>Processing time</label><select id="l_proc"><option value="${esc(p.l_readiness || '')}">Loading…</option></select></div>
+    <div><label>Returns policy</label><select id="l_ret"><option value="${esc(p.l_return_policy || '')}">Loading…</option></select></div>
+    <div><label>Shop section</label><select id="l_sec"><option value="${esc(p.l_shop_section || '')}">Loading…</option></select></div>
     <div class="full"><label>Variation name (e.g. Colour — leave blank for none)</label><input id="l_vname" value="${esc(p.l_var_name || '')}" placeholder="Colour">
       <div id="l_vopts" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
       <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center"><span class="mute" style="font-size:12px">Load colours from:</span><span id="l_vmat" style="display:flex;gap:10px;flex-wrap:wrap"></span></div>
@@ -391,7 +393,7 @@ async function editListing(id) {
       <input type="file" id="l_file" accept=".jpg,.jpeg,.png,.gif" multiple></div>
   </div>
   <p class="mute" style="margin:12px 0 0">Price (${money(p.price)}) and item weight come from the product. Who-made comes from your Settings defaults; shipping and processing time use the choices above (or your Settings defaults).</p>
-  <div class="bar" style="margin:14px 0 0"><button class="b" id="l_draft">Save &amp; create Etsy draft</button><button class="b alt" id="l_save">Save only</button><button class="g" onclick="this.closest('.modal').remove()">Close</button></div>
+  <div class="bar" style="margin:14px 0 0"><button class="b" id="l_draft">${p.etsy_listing_id ? 'Save &amp; update on Etsy' : 'Save &amp; create Etsy draft'}</button><button class="b alt" id="l_save">Save only</button><button class="g" onclick="this.closest('.modal').remove()">Close</button></div>
   <div id="l_msg" style="margin-top:10px"></div>`);
   const counters = () => { $('#l_tc', m).textContent = `${$('#l_title', m).value.length}/140`; $('#l_gc', m).textContent = `${(($('#l_tags', m).value + ',' + (S.listing_default_tags || '')).split(',').map(x => x.trim()).filter(Boolean).length)}/13 incl. defaults`; };
   m.addEventListener('input', counters); counters();
@@ -468,18 +470,24 @@ async function editListing(id) {
   const save = () => api('PUT', `/api/products/${id}/listing`, {l_title: $('#l_title', m).value, l_desc: $('#l_desc', m).value, l_tags: $('#l_tags', m).value,
     l_materials: $('#l_mat', m).value, l_qty: $('#l_qty', m).value, taxonomy_id: tax.id, taxonomy_name: tax.name,
     l_var_name: $('#l_vname', m).value, l_var_options: [...vsel].join('|'), l_personalisation: $('#l_pers', m).value,
-    l_ship_profile: $('#l_ship', m).value, l_readiness: $('#l_proc', m).value});
+    l_ship_profile: $('#l_ship', m).value, l_readiness: $('#l_proc', m).value, l_return_policy: $('#l_ret', m).value, l_shop_section: $('#l_sec', m).value});
   const fillProf = async (sel, url, cur, defId) => { try { const L = await api('GET', url); const d = L.find(x => String(x.id) === String(defId));
     $(sel, m).innerHTML = `<option value="">Default from Settings${d ? ' — ' + esc(d.title) : ''}</option>` + L.map(x => `<option value="${x.id}" ${String(x.id) === String(cur) ? 'selected' : ''}>${esc(x.title)}</option>`).join(''); }
     catch (e) { $(sel, m).innerHTML = '<option value="">Default from Settings</option>'; } };
-  if (S.etsy_connected) { fillProf('#l_ship', '/api/etsy/shipping-profiles', p.l_ship_profile, S.listing_shipping_profile_id); fillProf('#l_proc', '/api/etsy/processing-profiles', p.l_readiness, S.listing_readiness_state_id); }
-  else { $('#l_ship', m).innerHTML = $('#l_proc', m).innerHTML = '<option value="">Default from Settings</option>'; }
+  if (S.etsy_connected) { fillProf('#l_ship', '/api/etsy/shipping-profiles', p.l_ship_profile, S.listing_shipping_profile_id); fillProf('#l_proc', '/api/etsy/processing-profiles', p.l_readiness, S.listing_readiness_state_id);
+    fillProf('#l_ret', '/api/etsy/return-policies', p.l_return_policy, S.listing_return_policy_id); fillProf('#l_sec', '/api/etsy/shop-sections', p.l_shop_section, S.listing_shop_section_id); }
+  else { ['#l_ship', '#l_proc', '#l_ret', '#l_sec'].forEach(i => $(i, m).innerHTML = '<option value="">Default from Settings</option>'); }
   $('#l_save', m).onclick = () => safe(async () => { await save(); toast('Saved'); route(); });
   $('#l_draft', m).onclick = () => safe(async () => {
-    await save(); $('#l_msg', m).innerHTML = '<span class="mute">Creating draft on Etsy…</span>';
+    const upd = !!p.etsy_listing_id;
+    await save(); $('#l_msg', m).innerHTML = `<span class="mute">${upd ? 'Updating' : 'Creating draft on'} Etsy…</span>`;
     try {
-      const r = await api('POST', `/api/products/${id}/etsy-draft`);
-      $('#l_msg', m).innerHTML = `<div class="note"><b class="good">Draft created.</b> <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">Open it on Etsy ↗</a> to finish and publish.${r.variations ? `<br>${r.variations} ${esc($('#l_vname', m).value)} options added.` : ''}${r.personalisation ? `<br><b>Personalisation:</b> switch it on in Etsy and use this wording: <i>${esc(r.personalisation)}</i>` : ''}${r.warnings.length ? '<br><span class="bad">Photo problems: ' + r.warnings.map(esc).join('; ') + '</span>' : ''}</div>`;
+      const r = await api('POST', `/api/products/${id}/${upd ? 'etsy-update' : 'etsy-draft'}`);
+      const vn = $('#l_vname', m).value;
+      $('#l_msg', m).innerHTML = `<div class="note"><b class="good">${upd ? 'Etsy listing updated.' : 'Draft created.'}</b> <a href="${esc(r.url || p.etsy_listing_url)}" target="_blank" style="color:var(--acc)">Open it on Etsy ↗</a>${upd ? '' : ' to finish and publish.'}
+        <br>${r.variations ? `${r.variations} ${esc(vn)} options sent.` : 'No variations sent.'}${r.photos ? ` ${r.photos} photo${r.photos > 1 ? 's' : ''} uploaded.` : ''}
+        ${r.personalisation ? `<br><b>Personalisation:</b> switch it on in Etsy and use this wording: <i>${esc(r.personalisation)}</i>` : ''}
+        ${r.warnings.length ? '<br><span class="bad">' + r.warnings.map(esc).join('<br>') + '</span>' : ''}</div>`;
       route();
     } catch (e) { $('#l_msg', m).innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
   });
@@ -1019,6 +1027,9 @@ async function settingsView() {
   <div class="grid" style="max-width:700px">
     <div><label>Shipping profile</label><select data-k="listing_shipping_profile_id" id="l_ship"><option value="${esc(S.listing_shipping_profile_id)}">${S.listing_shipping_profile_id ? 'Saved (' + esc(S.listing_shipping_profile_id) + ')' : (S.etsy_connected ? 'Loading…' : 'Connect Etsy first')}</option></select></div>
     <div><label>Processing time profile</label><select data-k="listing_readiness_state_id" id="l_proc"><option value="${esc(S.listing_readiness_state_id)}">${S.listing_readiness_state_id ? 'Saved (' + esc(S.listing_readiness_state_id) + ')' : (S.etsy_connected ? 'Loading…' : 'Connect Etsy first')}</option></select></div>
+    <div><label>Returns policy</label><select data-k="listing_return_policy_id" id="l_retd"><option value="${esc(S.listing_return_policy_id)}">${S.listing_return_policy_id ? 'Saved (' + esc(S.listing_return_policy_id) + ')' : (S.etsy_connected ? 'Loading…' : 'Connect Etsy first')}</option></select></div>
+    <div><label>Shop section</label><select data-k="listing_shop_section_id" id="l_secd"><option value="${esc(S.listing_shop_section_id)}">${S.listing_shop_section_id ? 'Saved (' + esc(S.listing_shop_section_id) + ')' : (S.etsy_connected ? 'Loading…' : 'Connect Etsy first')}</option></select></div>
+    <div><label>Auto-renew listings</label><select data-k="listing_auto_renew"><option value="0" ${S.listing_auto_renew !== '1' ? 'selected' : ''}>Manual renewal</option><option value="1" ${S.listing_auto_renew === '1' ? 'selected' : ''}>Automatic</option></select></div>
     <div><label>Who made it</label><select data-k="listing_who_made">${[['i_did','I did'],['collective','A member of my shop'],['someone_else','Another company or person']].map(([v, l]) => `<option value="${v}" ${S.listing_who_made === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     <div><label>When made</label><select data-k="listing_when_made">${[['made_to_order','Made to order'],['2020_2026','2020–2026']].map(([v, l]) => `<option value="${v}" ${S.listing_when_made === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     ${f('listing_quantity', 'Default stock quantity on new drafts', 'number')}${f('listing_materials', 'Default materials (comma separated)')}
@@ -1044,7 +1055,7 @@ async function settingsView() {
   $('#save').onclick = () => safe(async () => { await api('PUT', '/api/settings', collect()); toast('Saved'); route(); });
   const eres = t => { const e = $('#eres'); if (e) e.innerHTML = t; };
   const fillSel = async (id, url, cur) => { try { const L = await api('GET', url); const el = $(id); el.innerHTML = '<option value="">— none —</option>' + L.map(x => `<option value="${x.id}" ${String(x.id) === String(cur) ? 'selected' : ''}>${esc(x.title)}</option>`).join(''); } catch (e) { $(id).options[0].textContent = 'Could not load: ' + e.message.slice(0, 60); } };
-  if (S.etsy_connected) { fillSel('#l_ship', '/api/etsy/shipping-profiles', S.listing_shipping_profile_id); fillSel('#l_proc', '/api/etsy/processing-profiles', S.listing_readiness_state_id); }
+  if (S.etsy_connected) { fillSel('#l_ship', '/api/etsy/shipping-profiles', S.listing_shipping_profile_id); fillSel('#l_proc', '/api/etsy/processing-profiles', S.listing_readiness_state_id); fillSel('#l_retd', '/api/etsy/return-policies', S.listing_return_policy_id); fillSel('#l_secd', '/api/etsy/shop-sections', S.listing_shop_section_id); }
   const syncRun = (full) => safe(async () => {
     eres('Syncing…');
     try { const r = await api('POST', '/api/etsy/sync', {full}); eres(`<span class="good">Imported ${r.added} sale lines</span> · ${r.skipped_duplicates} already had · ${r.products_created} new products${r.receipts_with_refunds ? ' · ' + r.receipts_with_refunds + ' orders have refunds (check them)' : ''}`); }
