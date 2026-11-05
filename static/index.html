@@ -266,7 +266,7 @@ function editProduct(id) {
   <div class="grid">
     <div class="full"><label>Name</label><input id="f_name" value="${esc(p.name)}"></div>
     <div><label>SKU (matches Etsy SKU on import)</label><input id="f_sku" value="${esc(p.sku)}"></div>
-    <div><label>Selling price (${cur()})</label><input id="f_price" type="number" step="0.01" value="${p.price}"></div>
+    <div><label>Selling price (${cur()}) <button class="g" id="f_calc" type="button" style="margin-left:6px;padding:2px 9px">✨ Calculate</button></label><input id="f_price" type="number" step="0.01" value="${p.price}"></div>
     <div class="full"><div class="note" style="margin:0">
       <b>Filament cost from Bambuddy</b> — link the print you sliced for this product and its weight/cost per plate are pulled in (using the spool prices you entered in Bambuddy).
       <div style="display:flex;gap:6px;margin-top:6px"><input id="bbq" placeholder="Search Bambuddy archives…" style="flex:1"><button class="g" id="bbgo">Search</button></div>
@@ -289,6 +289,11 @@ function editProduct(id) {
   </div>
   <div class="bar" style="margin:14px 0 0"><button class="b" id="save">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span>
   ${id ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
+  $('#f_calc', m).onclick = () => {
+    const n = id => +$(id, m).value || 0;
+    const cost = (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0);
+    priceDialog({cost, postage: p.postage_cost > 0 ? p.postage_cost : (+S.default_postage_cost || 0), name: $('#f_name', m).value || 'this product'}, v => { $('#f_price', m).value = v.toFixed(2); });
+  };
   let arch = {id: p.archive_id, name: p.archive_name};
   let SUP = [], psel = [];
   const renderSup = () => {
@@ -750,6 +755,31 @@ function restockSupply(id, name) {
   <div class="bar" style="margin-top:14px"><button class="b" id="ok">Add to stock</button><button class="g" id="set">Set stock to this number instead</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
   const go = mode => safe(async () => { await api('POST', `/api/supplies/${id}/restock`, {mode, qty: $('#r_q', m).value, cost: $('#r_c', m).value}); m.remove(); route(); });
   $('#ok', m).onclick = () => go('add'); $('#set', m).onclick = () => go('set');
+}
+
+function priceDialog(init, onUse) {
+  const m = modal(`<h2 style="margin-top:0">Work out a price — ${esc(init.name)}</h2><div class="grid">
+    <div><label>Cost to make one (£)</label><input id="pd_cost" type="number" step="0.01" value="${init.cost.toFixed(2)}"></div>
+    <div><label>Postage you pay (£)</label><input id="pd_post" type="number" step="0.01" value="${(+init.postage || 0).toFixed(2)}"></div>
+    <div><label>Shipping you charge the buyer (£)</label><input id="pd_ship" type="number" step="0.01" value="${+S.default_shipping_charged || 0}"></div>
+    <div><label><input type="checkbox" id="pd_ad" style="width:auto"> Sold via Offsite Ads</label></div>
+    <div><label>I want to target</label><select id="pd_mode"><option value="margin">a profit margin %</option><option value="profit">a profit amount £</option></select></div>
+    <div><label id="pd_tl">Target margin %</label><input id="pd_target" type="number" step="0.5" value="${+S.target_margin_pct || 40}"></div></div>
+  <div id="pd_out" style="margin-top:14px"></div>
+  <div class="bar" style="margin-top:14px"><button class="b" id="pd_use">Use this price</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  let best = 0;
+  const calc = () => {
+    const o = {cost: +$('#pd_cost', m).value || 0, ship: +$('#pd_ship', m).value || 0, postage: +$('#pd_post', m).value || 0, offsite: $('#pd_ad', m).checked};
+    const mode = $('#pd_mode', m).value, target = +$('#pd_target', m).value || 0;
+    $('#pd_tl', m).textContent = mode === 'margin' ? 'Target margin %' : 'Target profit per item (£)';
+    const raw = priceCalc({...o, mode, target}), be = priceCalc({...o, mode: 'profit', target: 0});
+    if (!isFinite(raw) || raw <= 0) { best = 0; $('#pd_out', m).innerHTML = '<div class="note">That target isn’t reachable with these fees — lower the margin.</div>'; return; }
+    best = Math.ceil(raw * 20) / 20; const r = profitAt(best, o);
+    $('#pd_out', m).innerHTML = `<div class="card"><div class="l">Suggested price</div><div class="v">${money(best)}</div>
+      <div class="mute" style="font-size:13px;margin-top:6px">Break-even ${money(Math.ceil(be * 20) / 20)} · Etsy fees ${money(r.fees)} · profit <b class="${cls(r.profit)}">${money(r.profit)}</b> (${r.margin.toFixed(0)}% margin)</div></div>`;
+  };
+  m.addEventListener('input', calc); calc();
+  $('#pd_use', m).onclick = () => { if (best > 0) { onUse(best); m.remove(); } };
 }
 
 /* ---------------- Shipping calculator ---------------- */
