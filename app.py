@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.20.0"
+VERSION = "0.21.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -1219,6 +1219,30 @@ def api_etsy_shipping():
     except EtsyError as e:
         return jsonify({"error": str(e)}), 502
     return jsonify([{"id": r["shipping_profile_id"], "title": r.get("title", "")} for r in d.get("results", [])])
+
+
+@app.route("/api/etsy/shipping-costs")
+def api_etsy_ship_costs():
+    """What each Etsy shipping profile charges the buyer for UK delivery (fixed-price profiles only)."""
+    shop = settings().get("etsy_shop_id")
+    try:
+        d = etsy_get(f"/shops/{shop}/shipping-profiles")
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    out = {}
+    for r in d.get("results", []):
+        dests = r.get("shipping_profile_destinations") or []
+        dom = [x for x in dests if x.get("destination_country_iso") == (r.get("origin_country_iso") or "GB")] or \
+              [x for x in dests if x.get("destination_country_iso") in (None, "")] or dests
+        cost = None
+        for x in dom:
+            pc = x.get("primary_cost")
+            if isinstance(pc, dict) and pc.get("amount") is not None:
+                cost = round(pc["amount"] / (pc.get("divisor") or 100), 2)
+                break
+        if cost is not None:
+            out[str(r["shipping_profile_id"])] = {"title": r.get("title", ""), "cost": cost}
+    return jsonify(out)
 
 
 @app.route("/api/etsy/processing-profiles")

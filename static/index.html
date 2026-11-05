@@ -171,6 +171,7 @@ function nav() {
   return cur;
 }
 async function route() {
+  SHIPDATA = null;
   const t = nav();
   if (!route.v) { try { route.v = (await api('GET', '/api/version')).version; } catch (e) { route.v = '?'; } }
   $('#ver').textContent = 'v' + route.v;
@@ -289,11 +290,12 @@ function editProduct(id) {
   </div>
   <div class="bar" style="margin:14px 0 0"><button class="b" id="save">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span>
   ${id ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
-  $('#f_calc', m).onclick = () => {
-    const n = id => +$(id, m).value || 0;
+  $('#f_calc', m).onclick = () => safe(async () => {
+    const n = id => +$(id, m).value || 0, D = await loadShipData();
     const cost = (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0);
-    priceDialog({cost, postage: p.postage_cost > 0 ? p.postage_cost : (+S.default_postage_cost || 0), name: $('#f_name', m).value || 'this product'}, v => { $('#f_price', m).value = v.toFixed(2); });
-  };
+    const [po, ps] = postageFor(p, D), [sh, ss] = shipChargedFor(p, D);
+    priceDialog({cost, postage: po, ship: sh, postageSrc: ps, shipSrc: ss, name: $('#f_name', m).value || 'this product'}, v => { $('#f_price', m).value = v.toFixed(2); });
+  });
   let arch = {id: p.archive_id, name: p.archive_name};
   let SUP = [], psel = [];
   const renderSup = () => {
@@ -577,16 +579,40 @@ function profitAt(price, {cost, ship, postage, offsite}) {
   const gross = price + ship, fees = gross * r + F, profit = gross - fees - postage - cost;
   return {gross, fees, profit, margin: gross ? profit / gross * 100 : 0};
 }
+/* ---------- autofill helpers (postage you pay / shipping you charge) ---------- */
+let SHIPDATA = null;
+async function loadShipData() {
+  if (SHIPDATA) return SHIPDATA;
+  let R = [], costs = {};
+  try { R = await api('GET', '/api/shipping/rates'); } catch (e) {}
+  if (S.etsy_connected) { try { const c = await api('GET', '/api/etsy/shipping-costs'); if (!c.error) costs = c; } catch (e) {} }
+  return SHIPDATA = {R, costs};
+}
+function postageFor(p, D) {
+  if (p && p.postage_cost > 0) return [p.postage_cost, 'this product’s saved postage (Shipping tab)'];
+  if (p && p.pack_g > 0) {
+    const o = shipOptions(D.R.filter(s => s.etsy), p.pack_g, [p.pack_l, p.pack_w, p.pack_h]).filter(x => x.ok).sort((a, b) => a.price - b.price)[0];
+    if (o) return [o.price, `cheapest Etsy label for its saved parcel (${o.name.replace(' (est.)', '')})`];
+  }
+  return [+S.default_postage_cost || 0, 'your default postage (Settings)'];
+}
+function shipChargedFor(p, D) {
+  const id = String((p && p.l_ship_profile) || S.listing_shipping_profile_id || ''), c = D.costs[id];
+  if (c) return [c.cost, `your Etsy shipping profile “${c.title}”`];
+  return [+S.default_shipping_charged || 0, 'your default (Settings)'];
+}
+
 async function pricing() {
+  SHIPDATA = null; const D = await loadShipData();
   const act = PRODUCTS.filter(p => p.active);
   const dpost = +S.default_postage_cost || 0, dship = +S.default_shipping_charged || 0, dm = +S.target_margin_pct || 40;
   $('#main').innerHTML = `<div class="top"><h1>Pricing calculator</h1></div>
   <div class="note">Works out the price you need after Etsy fees (using your Settings rates), postage and material. Fees are estimates — check them against a real Etsy statement.</div>
   <div class="card" style="margin-bottom:18px"><div class="grid">
-    <div class="full"><label>Start from a product (fills the cost)</label><select id="pc_prod"><option value="">— manual —</option>${act.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+    <div class="full"><label>Start from a product (fills cost, postage and shipping — all editable)</label><select id="pc_prod"><option value="">— manual —</option>${act.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
     <div><label>Cost to make one (£)</label><input id="pc_cost" type="number" step="0.01" value="0"></div>
-    <div><label>Postage you pay (£)</label><input id="pc_post" type="number" step="0.01" value="${dpost}"></div>
-    <div><label>Shipping you charge the buyer (£)</label><input id="pc_ship" type="number" step="0.01" value="${dship}"></div>
+    <div><label>Postage you pay (£)</label><input id="pc_post" type="number" step="0.01" value="${dpost}"><div class="mute" id="pc_posth" style="font-size:12px;margin-top:4px"></div></div>
+    <div><label>Shipping you charge the buyer (£)</label><input id="pc_ship" type="number" step="0.01" value="${dship}"><div class="mute" id="pc_shiph" style="font-size:12px;margin-top:4px"></div></div>
     <div><label><input type="checkbox" id="pc_ad" style="width:auto"> Sold via Offsite Ads</label></div>
     <div><label>I want to target</label><select id="pc_mode"><option value="margin">a profit margin %</option><option value="profit">a profit amount £</option></select></div>
     <div><label id="pc_tl">Target margin %</label><input id="pc_target" type="number" step="0.5" value="${dm}"></div>
@@ -594,9 +620,9 @@ async function pricing() {
   <div id="pc_out"></div>
   <h2>All products at their current price</h2>
   <div class="wrap"><table><tr><th>Product</th><th class="r">Price</th><th class="r">Cost</th><th class="r">Profit</th><th class="r">Margin</th><th class="r">Price for ${dm}%</th></tr>
-  ${act.map(p => { const o = {cost: p.unit_cost, ship: dship, postage: p.postage_cost > 0 ? p.postage_cost : dpost, offsite: false}; const r = profitAt(p.price, o); const tp = priceCalc({...o, mode: 'margin', target: dm});
+  ${act.map(p => { const o = {cost: p.unit_cost, ship: shipChargedFor(p, D)[0], postage: postageFor(p, D)[0], offsite: false}; const r = profitAt(p.price, o); const tp = priceCalc({...o, mode: 'margin', target: dm});
     return `<tr><td>${esc(p.name)}</td><td class="r">${money(p.price)}</td><td class="r">${money(p.unit_cost)}</td><td class="r ${cls(r.profit)}">${money(r.profit)}</td><td class="r ${cls(r.margin - dm)}">${r.margin.toFixed(0)}%</td><td class="r">${isFinite(tp) ? money(Math.ceil(tp * 20) / 20) : '—'}</td></tr>`; }).join('') || '<tr><td colspan=6 class="mute">No products yet.</td></tr>'}
-  </table></div><p class="mute">Profit here is for a single item using each product's saved postage (from the Shipping tab) or your default from Settings, plus your default shipping charge.</p>`;
+  </table></div><p class="mute">Profit here is for a single item using the product's postage (saved, or the cheapest Etsy label for its saved parcel, or your default) and the shipping charge from its Etsy shipping profile (or your default).</p>`;
   const g = id => $(id);
   const calc = () => {
     const o = {cost: +g('#pc_cost').value || 0, ship: +g('#pc_ship').value || 0, postage: +g('#pc_post').value || 0, offsite: g('#pc_ad').checked};
@@ -615,7 +641,17 @@ async function pricing() {
       ${prod ? `<button class="b" id="pc_apply">Set ${esc(PRODUCTS.find(x => x.id == prod).name)} to ${money(nice)}</button>` : ''}`;
     if (prod) g('#pc_apply').onclick = () => safe(async () => { await api('PUT', `/api/products/${prod}`, {price: nice}); toast('Price updated (and logged in history)'); route(); });
   };
-  g('#pc_prod').onchange = () => { const p = PRODUCTS.find(x => x.id == g('#pc_prod').value); if (p) { g('#pc_cost').value = p.unit_cost.toFixed(2); if (p.postage_cost > 0) g('#pc_post').value = p.postage_cost; } calc(); };
+  g('#pc_prod').onchange = () => {
+    const p = PRODUCTS.find(x => x.id == g('#pc_prod').value);
+    try { localStorage.setItem('pcProd', g('#pc_prod').value); } catch (e) {}
+    if (p) { const [po, ps] = postageFor(p, D), [sh, ss] = shipChargedFor(p, D);
+      g('#pc_cost').value = p.unit_cost.toFixed(2); g('#pc_post').value = po.toFixed(2); g('#pc_ship').value = sh.toFixed(2);
+      g('#pc_posth').textContent = 'Auto-filled from ' + ps; g('#pc_shiph').textContent = 'Auto-filled from ' + ss; }
+    else { g('#pc_posth').textContent = g('#pc_shiph').textContent = ''; }
+    calc();
+  };
+  { const want = localStorage.getItem('pcProd'); const first = act.find(x => String(x.id) === want) || act[0]; if (first) { g('#pc_prod').value = first.id; } }
+  g('#pc_prod').onchange();
   $('#main').addEventListener('input', calc); calc();
 }
 
@@ -760,8 +796,8 @@ function restockSupply(id, name) {
 function priceDialog(init, onUse) {
   const m = modal(`<h2 style="margin-top:0">Work out a price — ${esc(init.name)}</h2><div class="grid">
     <div><label>Cost to make one (£)</label><input id="pd_cost" type="number" step="0.01" value="${init.cost.toFixed(2)}"></div>
-    <div><label>Postage you pay (£)</label><input id="pd_post" type="number" step="0.01" value="${(+init.postage || 0).toFixed(2)}"></div>
-    <div><label>Shipping you charge the buyer (£)</label><input id="pd_ship" type="number" step="0.01" value="${+S.default_shipping_charged || 0}"></div>
+    <div><label>Postage you pay (£)</label><input id="pd_post" type="number" step="0.01" value="${(+init.postage || 0).toFixed(2)}"><div class="mute" style="font-size:12px;margin-top:4px">Auto-filled from ${esc(init.postageSrc || 'your default')}</div></div>
+    <div><label>Shipping you charge the buyer (£)</label><input id="pd_ship" type="number" step="0.01" value="${(+init.ship || 0).toFixed(2)}"><div class="mute" style="font-size:12px;margin-top:4px">Auto-filled from ${esc(init.shipSrc || 'your default')}</div></div>
     <div><label><input type="checkbox" id="pd_ad" style="width:auto"> Sold via Offsite Ads</label></div>
     <div><label>I want to target</label><select id="pd_mode"><option value="margin">a profit margin %</option><option value="profit">a profit amount £</option></select></div>
     <div><label id="pd_tl">Target margin %</label><input id="pd_target" type="number" step="0.5" value="${+S.target_margin_pct || 40}"></div></div>
