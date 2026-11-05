@@ -307,6 +307,7 @@ def norm_archive(a, s):
         "status": a.get("status", ""),
         "minutes": int(num(a.get("print_time_seconds")) // 60),
         "type": a.get("filament_type", ""),
+        "objects": int(num(a.get("object_count"))) or None,
     }
 
 
@@ -328,7 +329,7 @@ def api_bb_archives():
         if len(q) >= 2:
             data = bb_get("/archives/search", {"q": q, "limit": 50})
         else:
-            data = bb_get("/archives", {"limit": 50})
+            data = bb_get("/archives/", {"limit": 50})
     except BBError as e:
         return jsonify({"error": str(e)}), 502
     return jsonify([norm_archive(a, s) for a in as_list(data)])
@@ -337,7 +338,7 @@ def api_bb_archives():
 @app.route("/api/bambuddy/test")
 def api_bb_test():
     try:
-        a = as_list(bb_get("/archives", {"limit": 1}))
+        a = as_list(bb_get("/archives/", {"limit": 1}))
         try:
             sp = as_list(bb_get("/inventory/spools"))
             spools = len(sp)

@@ -173,11 +173,12 @@ function editProduct(id) {
   let arch = {id: p.archive_id, name: p.archive_name};
   const search = () => safe(async () => {
     const list = await api('GET', '/api/bambuddy/archives?q=' + encodeURIComponent($('#bbq', m).value));
-    $('#bbres', m).innerHTML = list.slice(0, 8).map((a, i) => `<div class="pick" data-i="${i}"><b>${esc(a.name)}</b> <span class="mute">${a.grams}g · ${money(a.cost)}${a.cost_estimated ? ' (est.)' : ''} · ${esc(a.status)}</span></div>`).join('') || '<div class="mute">No matches.</div>';
+    $('#bbres', m).innerHTML = list.slice(0, 8).map((a, i) => `<div class="pick" data-i="${i}"><b>${esc(a.name)}</b> <span class="mute">${a.grams}g · ${money(a.cost)}${a.cost_estimated ? ' (est.)' : ''}${a.objects ? ' · ' + a.objects + ' objects' : ''} · ${esc(a.status)}</span></div>`).join('') || '<div class="mute">No matches.</div>';
     m.querySelectorAll('.pick').forEach(el => el.onclick = () => {
       const a = list[+el.dataset.i]; arch = {id: a.id, name: a.name};
       $('#f_grams', m).value = a.grams; $('#f_pcost', m).value = a.cost.toFixed(2);
       if (a.minutes) $('#f_min', m).value = a.minutes;
+      if (a.objects) $('#f_ipp', m).value = a.objects;
       if (!$('#f_name', m).value) $('#f_name', m).value = a.name;
       $('#bblinked', m).textContent = 'Linked: ' + a.name + (a.cost_estimated ? ' (cost estimated from default £/kg in Settings)' : '');
       $('#bbres', m).innerHTML = '';
