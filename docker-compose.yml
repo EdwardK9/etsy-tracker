@@ -1,0 +1,15 @@
+# Portainer: Stacks > Add stack > Repository. Compose path: docker-compose.yml
+# Enable "Re-pull image and redeploy" / GitOps updates to auto-update on new commits.
+services:
+  etsy-tracker:
+    build: .
+    image: etsy-tracker:latest
+    container_name: etsy-tracker
+    environment:
+      - DB_PATH=/data/etsy.db
+      - TZ=Europe/London
+    volumes:
+      - /mnt/user/appdata/etsy-tracker/data:/data
+    ports:
+      - "5055:5055"
+    restart: unless-stopped

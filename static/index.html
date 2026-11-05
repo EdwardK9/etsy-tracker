@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Etsy Tracker</title>
+<style>
+:root{--bg:#0f1115;--card:#181b22;--line:#2a2f3a;--text:#e6e8ee;--mute:#8b93a5;--acc:#f1641e;--good:#3fb27f;--bad:#e5534b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,sans-serif}
+header{display:flex;gap:6px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap;position:sticky;top:0;background:var(--bg);z-index:5}
+header h1{font-size:16px;margin:0 14px 0 0}
+nav button{background:none;border:0;color:var(--mute);padding:7px 12px;border-radius:6px;cursor:pointer;font-size:14px}
+nav button.on{background:var(--card);color:var(--text)}
+main{padding:16px;max-width:1200px;margin:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
+.card .l{color:var(--mute);font-size:12px}.card .v{font-size:22px;font-weight:600;margin-top:2px}
+.good{color:var(--good)}.bad{color:var(--bad)}.mute{color:var(--mute)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mute);font-weight:500;font-size:12px}
+td.r,th.r{text-align:right}
+.wrap{overflow-x:auto;margin-bottom:16px}
+h2{font-size:15px;margin:18px 0 8px}
+.bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.bar .sp{flex:1}
+button.b,a.b{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:13px;text-decoration:none;display:inline-block}
+button.g{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 9px;cursor:pointer;font-size:12px}
+button.g:hover{border-color:var(--mute)}
+input,select,textarea{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 8px;font:inherit;width:100%}
+label{display:block;font-size:12px;color:var(--mute);margin-bottom:3px}
+.modal{position:fixed;inset:0;background:#000a;display:flex;align-items:flex-start;justify-content:center;padding:30px 10px;overflow:auto;z-index:20}
+.modal>div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;width:100%;max-width:560px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid .full{grid-column:1/-1}
+.hbar{display:inline-block;height:8px;background:var(--acc);border-radius:3px;vertical-align:middle}
+.pill{font-size:11px;padding:1px 7px;border-radius:10px;background:#2a2f3a;color:var(--mute)}
+.pick{border:1px solid var(--line);border-radius:6px;padding:7px 9px;margin-top:6px;cursor:pointer}
+.pick:hover{border-color:var(--acc)}
+.note{background:#1d2230;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px;color:var(--mute);font-size:13px}
+#toast{position:fixed;bottom:16px;right:16px;background:var(--card);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;z-index:30}
+</style>
+</head>
+<body>
+<header>
+  <h1>🧵 Etsy Tracker</h1>
+  <nav id="nav"></nav>
+</header>
+<main id="main"></main>
+<div id="toast"></div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let S = {}, PRODUCTS = [];
+const cur = () => S.currency || '£';
+const money = n => (n < 0 ? '-' : '') + cur() + Math.abs(+n || 0).toFixed(2);
+const cls = n => n > 0 ? 'good' : n < 0 ? 'bad' : '';
+const today = () => new Date().toISOString().slice(0, 10);
+
+async function api(method, url, body) {
+  const r = await fetch(url, {method, headers: body ? {'Content-Type': 'application/json'} : {}, body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function toast(msg, bad) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; t.style.borderColor = bad ? 'var(--bad)' : 'var(--line)';
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 3500);
+}
+async function safe(fn) { try { await fn(); } catch (e) { toast(e.message, true); } }
+
+const TABS = [['dashboard','Dashboard'],['products','Products'],['stock','Printing & Stock'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
+function nav() {
+  const cur = location.hash.slice(1) || 'dashboard';
+  $('#nav').innerHTML = TABS.map(([k, l]) => `<button class="${k === cur ? 'on' : ''}" onclick="location.hash='${k}'">${l}</button>`).join('');
+  return cur;
+}
+async function route() {
+  const t = nav();
+  S = await api('GET', '/api/settings');
+  PRODUCTS = await api('GET', '/api/products');
+  await safe(() => VIEWS[t]());
+}
+window.addEventListener('hashchange', route);
+
+function modal(html) {
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div>${html}</div>`;
+  m.addEventListener('mousedown', e => { if (e.target === m) m.remove(); });
+  document.body.appendChild(m);
+  return m;
+}
+const prodOptions = (sel, activeOnly = true) => PRODUCTS.filter(p => !activeOnly || p.active || p.id == sel)
+  .map(p => `<option value="${p.id}" ${p.id == sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+
+/* ---------------- Dashboard ---------------- */
+let RANGE = 'all';
+function rangeDates() {
+  const d = new Date(), y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0');
+  if (RANGE === 'month') return [`${y}-${m}-01`, `${y}-${m}-31`];
+  if (RANGE === 'year') return [`${y}-01-01`, `${y}-12-31`];
+  if (RANGE === '30') { const f = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10); return [f, today()]; }
+  return ['', ''];
+}
+async function dashboard() {
+  const [f, t] = rangeDates();
+  const D = await api('GET', `/api/dashboard?from=${f}&to=${t}`);
+  const T = D.totals;
+  const maxRev = Math.max(1, ...D.months.map(m => m.revenue));
+  $('#main').innerHTML = `
+  <div class="bar"><select id="rng" style="width:auto">
+    ${[['all','All time'],['year','This year'],['month','This month'],['30','Last 30 days']].map(([k, l]) => `<option value="${k}" ${k === RANGE ? 'selected' : ''}>${l}</option>`).join('')}
+  </select><span class="sp"></span></div>
+  <div class="cards">
+    ${card('Revenue', money(T.revenue))}${card('Etsy fees', money(-T.fees))}${card('Postage', money(-T.postage))}
+    ${card('Material (sold items)', money(-T.cogs))}${card('Failed prints', money(-T.waste))}${card('Other expenses', money(-T.expenses))}
+    ${card('Net profit', money(T.net), cls(T.net))}${card('Items sold', T.items)}${card('Orders', T.orders)}
+    ${card('Stock on hand', T.stock_units + ' items')}${card('Stock value (at cost)', money(T.stock_value))}${card('Spent on printing', money(T.spent_printing))}
+  </div>
+  ${D.low_stock.length ? `<div class="note">⚠️ Low stock: ${D.low_stock.map(l => `<b>${esc(l.name)}</b> (${l.stock} left)`).join(', ')}</div>` : ''}
+  <h2>By month</h2><div class="wrap"><table><tr><th>Month</th><th class="r">Revenue</th><th class="r">Expenses</th><th class="r">Profit</th><th></th></tr>
+  ${D.months.map(m => `<tr><td>${m.month}</td><td class="r">${money(m.revenue)}</td><td class="r">${money(m.expenses)}</td><td class="r ${cls(m.profit)}">${money(m.profit)}</td><td><span class="hbar" style="width:${Math.round(m.revenue / maxRev * 160)}px"></span></td></tr>`).join('') || '<tr><td colspan=5 class="mute">No data yet.</td></tr>'}
+  </table></div>
+  <h2>By product</h2><div class="wrap"><table><tr><th>Product</th><th class="r">Sold</th><th class="r">Revenue</th><th class="r">Profit</th></tr>
+  ${D.products.map(p => `<tr><td>${esc(p.product)}</td><td class="r">${p.qty}</td><td class="r">${money(p.revenue)}</td><td class="r ${cls(p.profit)}">${money(p.profit)}</td></tr>`).join('') || '<tr><td colspan=4 class="mute">No sales yet.</td></tr>'}
+  </table></div>
+  ${D.expense_categories.length ? `<h2>Expenses by category</h2><div class="wrap"><table>${D.expense_categories.map(c => `<tr><td>${esc(c.category)}</td><td class="r">${money(c.amount)}</td></tr>`).join('')}</table></div>` : ''}
+  <p class="mute">Net profit = revenue − Etsy fees − postage − material cost of sold items − failed prints − other expenses.</p>`;
+  $('#rng').onchange = e => { RANGE = e.target.value; safe(dashboard); };
+}
+const card = (l, v, c = '') => `<div class="card"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
+
+/* ---------------- Products ---------------- */
+async function products() {
+  $('#main').innerHTML = `
+  <div class="bar"><button class="b" onclick="editProduct()">+ New product</button><span class="sp"></span>
+  <a class="g b" style="background:var(--card);border:1px solid var(--line)" href="/api/export/products.csv">Export CSV</a></div>
+  <div class="wrap"><table><tr><th>Product</th><th>SKU</th><th class="r">Price</th><th class="r">Unit cost</th><th class="r">Margin</th><th class="r">Stock</th><th>Bambuddy</th><th></th></tr>
+  ${PRODUCTS.map(p => `<tr style="${p.active ? '' : 'opacity:.5'}"><td>${esc(p.name)}</td><td class="mute">${esc(p.sku)}</td>
+    <td class="r">${money(p.price)}</td><td class="r">${money(p.unit_cost)}</td><td class="r ${cls(p.margin_est)}">${money(p.margin_est)}</td>
+    <td class="r ${p.reorder_at && p.stock <= p.reorder_at ? 'bad' : ''}">${p.stock}</td>
+    <td>${p.archive_id ? `<span class="pill" title="${esc(p.archive_name)}">linked · ${p.plate_grams}g/plate</span> <button class="g" onclick="refreshBB(${p.id})">↻</button>` : '<span class="mute">—</span>'}</td>
+    <td><button class="g" onclick="editProduct(${p.id})">Edit</button> <button class="g" onclick="history(${p.id})">History</button></td></tr>`).join('') || '<tr><td colspan=8 class="mute">No products yet — add your first one.</td></tr>'}
+  </table></div>`;
+}
+async function refreshBB(id) { await safe(async () => { const r = await api('POST', `/api/products/${id}/refresh-bambuddy`); toast(`Updated from Bambuddy: ${r.grams}g, ${money(r.cost)} per plate`); route(); }); }
+
+function editProduct(id) {
+  const p = PRODUCTS.find(x => x.id === id) || {name: '', sku: '', price: '', plate_grams: 0, plate_cost: 0, items_per_plate: 1, extra_cost: 0, print_minutes: 0, reorder_at: 0, active: 1, notes: '', archive_id: null, archive_name: ''};
+  const m = modal(`<h2 style="margin-top:0">${id ? 'Edit' : 'New'} product</h2>
+  <div class="grid">
+    <div class="full"><label>Name</label><input id="f_name" value="${esc(p.name)}"></div>
+    <div><label>SKU (matches Etsy SKU on import)</label><input id="f_sku" value="${esc(p.sku)}"></div>
+    <div><label>Selling price (${cur()})</label><input id="f_price" type="number" step="0.01" value="${p.price}"></div>
+    <div class="full"><div class="note" style="margin:0">
+      <b>Filament cost from Bambuddy</b> — link the print you sliced for this product and its weight/cost per plate are pulled in (using the spool prices you entered in Bambuddy).
+      <div style="display:flex;gap:6px;margin-top:6px"><input id="bbq" placeholder="Search Bambuddy archives…" style="flex:1"><button class="g" id="bbgo">Search</button></div>
+      <div id="bbres"></div>
+      <div id="bblinked" class="mute" style="margin-top:6px">${p.archive_id ? 'Linked: ' + esc(p.archive_name) : 'Not linked — enter weight/cost manually below.'}</div>
+    </div></div>
+    <div><label>Filament per plate (g)</label><input id="f_grams" type="number" step="0.1" value="${p.plate_grams}"></div>
+    <div><label>Filament cost per plate (${cur()})</label><input id="f_pcost" type="number" step="0.01" value="${p.plate_cost}"></div>
+    <div><label>Items per plate</label><input id="f_ipp" type="number" min="1" value="${p.items_per_plate}"></div>
+    <div><label>Extra cost per item (packaging etc.)</label><input id="f_extra" type="number" step="0.01" value="${p.extra_cost}"></div>
+    <div><label>Print time per item (min)</label><input id="f_min" type="number" value="${p.print_minutes}"></div>
+    <div><label>Low-stock warning at</label><input id="f_re" type="number" value="${p.reorder_at}"></div>
+    <div class="full"><label>Notes</label><textarea id="f_notes" rows="2">${esc(p.notes)}</textarea></div>
+    <div><label><input type="checkbox" id="f_active" style="width:auto" ${p.active ? 'checked' : ''}> Active</label></div>
+  </div>
+  <div class="bar" style="margin:14px 0 0"><button class="b" id="save">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span>
+  ${id ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
+  let arch = {id: p.archive_id, name: p.archive_name};
+  const search = () => safe(async () => {
+    const list = await api('GET', '/api/bambuddy/archives?q=' + encodeURIComponent($('#bbq', m).value));
+    $('#bbres', m).innerHTML = list.slice(0, 8).map((a, i) => `<div class="pick" data-i="${i}"><b>${esc(a.name)}</b> <span class="mute">${a.grams}g · ${money(a.cost)}${a.cost_estimated ? ' (est.)' : ''} · ${esc(a.status)}</span></div>`).join('') || '<div class="mute">No matches.</div>';
+    m.querySelectorAll('.pick').forEach(el => el.onclick = () => {
+      const a = list[+el.dataset.i]; arch = {id: a.id, name: a.name};
+      $('#f_grams', m).value = a.grams; $('#f_pcost', m).value = a.cost.toFixed(2);
+      if (a.minutes) $('#f_min', m).value = a.minutes;
+      if (!$('#f_name', m).value) $('#f_name', m).value = a.name;
+      $('#bblinked', m).textContent = 'Linked: ' + a.name + (a.cost_estimated ? ' (cost estimated from default £/kg in Settings)' : '');
+      $('#bbres', m).innerHTML = '';
+    });
+  });
+  $('#bbgo', m).onclick = search;
+  $('#save', m).onclick = () => safe(async () => {
+    const body = {name: $('#f_name', m).value, sku: $('#f_sku', m).value, price: $('#f_price', m).value, archive_id: arch.id, archive_name: arch.name,
+      plate_grams: $('#f_grams', m).value, plate_cost: $('#f_pcost', m).value, items_per_plate: $('#f_ipp', m).value, extra_cost: $('#f_extra', m).value,
+      print_minutes: $('#f_min', m).value, reorder_at: $('#f_re', m).value, notes: $('#f_notes', m).value, active: $('#f_active', m).checked};
+    await api(id ? 'PUT' : 'POST', id ? `/api/products/${id}` : '/api/products', body);
+    m.remove(); route();
+  });
+  if (id) $('#del', m).onclick = () => { if (confirm('Delete this product?')) safe(async () => { await api('DELETE', `/api/products/${id}`); m.remove(); route(); }); };
+}
+
+async function history(id) {
+  const h = await api('GET', `/api/products/${id}/history`);
+  const p = PRODUCTS.find(x => x.id === id);
+  const spark = kind => {
+    const pts = h.filter(x => x.kind === kind); if (pts.length < 2) return '';
+    const vals = pts.map(x => x.value), mn = Math.min(...vals), mx = Math.max(...vals), rg = mx - mn || 1;
+    const path = pts.map((x, i) => `${i ? 'L' : 'M'}${(i / (pts.length - 1) * 240).toFixed(1)},${(36 - (x.value - mn) / rg * 32).toFixed(1)}`).join(' ');
+    return `<svg width="250" height="40" style="display:block"><path d="${path}" fill="none" stroke="var(--acc)" stroke-width="2"/></svg>`;
+  };
+  modal(`<h2 style="margin-top:0">${esc(p.name)} — history</h2>
+  <label>Selling price</label>${spark('price') || '<div class="mute">Not enough changes to chart yet.</div>'}
+  <label style="margin-top:10px">Unit cost</label>${spark('cost') || '<div class="mute">Not enough changes to chart yet.</div>'}
+  <div class="wrap" style="margin-top:12px"><table><tr><th>Date</th><th>Type</th><th class="r">Value</th></tr>
+  ${h.slice().reverse().map(x => `<tr><td>${x.changed_at.slice(0, 16)}</td><td>${x.kind === 'price' ? 'Price' : 'Unit cost'}</td><td class="r">${money(x.value)}</td></tr>`).join('')}</table></div>`);
+}
+
+/* ---------------- Printing & Stock ---------------- */
+async function stock() {
+  const B = await api('GET', '/api/batches');
+  $('#main').innerHTML = `
+  <div class="bar"><button class="b" onclick="addBatch()">+ Log print batch</button><span class="sp"></span>
+  <a class="b" style="background:var(--card);border:1px solid var(--line)" href="/api/export/batches.csv">Export CSV</a></div>
+  <h2>Current stock</h2>
+  <div class="wrap"><table><tr><th>Product</th><th class="r">Printed (good)</th><th class="r">Failed</th><th class="r">Sold</th><th class="r">In stock</th><th class="r">Value at cost</th></tr>
+  ${PRODUCTS.filter(p => p.active || p.made || p.sold).map(p => `<tr><td>${esc(p.name)}</td><td class="r">${p.made}</td><td class="r">${p.failed}</td><td class="r">${p.sold}</td>
+    <td class="r ${p.stock < 0 ? 'bad' : ''}"><b>${p.stock}</b></td><td class="r">${money(Math.max(p.stock, 0) * p.unit_cost)}</td></tr>`).join('') || '<tr><td colspan=6 class="mute">Add a product first.</td></tr>'}
+  </table></div>
+  <h2>Print log</h2>
+  <div class="wrap"><table><tr><th>Date</th><th>Product</th><th class="r">Good</th><th class="r">Failed</th><th class="r">Unit cost</th><th class="r">Total cost</th><th>Notes</th><th></th></tr>
+  ${B.map(b => `<tr><td>${b.date}</td><td>${esc(b.product)}</td><td class="r">${b.qty_good}</td><td class="r">${b.qty_failed}</td><td class="r">${money(b.unit_cost)}</td>
+    <td class="r">${money((b.qty_good + b.qty_failed) * b.unit_cost)}</td><td class="mute">${esc(b.notes)}</td><td><button class="g" onclick="del('batches',${b.id})">✕</button></td></tr>`).join('') || '<tr><td colspan=8 class="mute">Nothing logged yet.</td></tr>'}
+  </table></div>`;
+}
+function addBatch() {
+  if (!PRODUCTS.length) return toast('Add a product first.', true);
+  const m = modal(`<h2 style="margin-top:0">Log print batch</h2><div class="grid">
+    <div class="full"><label>Product</label><select id="b_p">${prodOptions()}</select></div>
+    <div><label>Date</label><input id="b_d" type="date" value="${today()}"></div><div></div>
+    <div><label>Good items made</label><input id="b_g" type="number" min="0" value="1"></div>
+    <div><label>Failed items</label><input id="b_f" type="number" min="0" value="0"></div>
+    <div class="full"><label>Notes</label><input id="b_n"></div></div>
+  <p class="mute">Cost is taken from the product's current unit cost.</p>
+  <div class="bar"><button class="b" id="ok">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  $('#ok', m).onclick = () => safe(async () => {
+    await api('POST', '/api/batches', {product_id: $('#b_p', m).value, date: $('#b_d', m).value, qty_good: $('#b_g', m).value, qty_failed: $('#b_f', m).value, notes: $('#b_n', m).value});
+    m.remove(); route();
+  });
+}
+
+/* ---------------- Sales ---------------- */
+async function sales() {
+  const L = await api('GET', '/api/sales');
+  $('#main').innerHTML = `
+  <div class="bar"><button class="b" onclick="editSale()">+ Record sale</button><span class="sp"></span>
+  <a class="b" style="background:var(--card);border:1px solid var(--line)" href="/api/export/sales.csv">Export CSV</a></div>
+  <div class="wrap"><table><tr><th>Date</th><th>Order</th><th>Product</th><th class="r">Qty</th><th class="r">Revenue</th><th class="r">Fees</th><th class="r">Postage</th><th class="r">Profit</th><th></th></tr>
+  ${L.map(s => `<tr><td>${s.date}</td><td class="mute">${esc(s.order_ref)}</td><td>${esc(s.product)}</td><td class="r">${s.qty}</td><td class="r">${money(s.revenue)}</td>
+    <td class="r">${money(s.fees)}</td><td class="r">${money(s.postage_cost)}</td><td class="r ${cls(s.profit)}">${money(s.profit)}</td>
+    <td><button class="g" onclick='editSale(${JSON.stringify(s).replace(/'/g, '&#39;')})'>Edit</button> <button class="g" onclick="del('sales',${s.id})">✕</button></td></tr>`).join('') || '<tr><td colspan=9 class="mute">No sales yet.</td></tr>'}
+  </table></div>`;
+}
+function editSale(s) {
+  if (!PRODUCTS.length) return toast('Add a product first.', true);
+  const e = s || {date: today(), order_ref: '', product_id: PRODUCTS[0].id, qty: 1, unit_price: '', shipping_charged: 0, discount: 0, postage_cost: 0, offsite_ad: 0, fees: '', notes: ''};
+  const m = modal(`<h2 style="margin-top:0">${s ? 'Edit' : 'Record'} sale</h2><div class="grid">
+    <div><label>Date</label><input id="s_d" type="date" value="${e.date}"></div>
+    <div><label>Etsy order #</label><input id="s_o" value="${esc(e.order_ref)}"></div>
+    <div class="full"><label>Product</label><select id="s_p">${prodOptions(e.product_id)}</select></div>
+    <div><label>Quantity</label><input id="s_q" type="number" min="1" value="${e.qty}"></div>
+    <div><label>Unit price (blank = current price)</label><input id="s_u" type="number" step="0.01" value="${e.unit_price}"></div>
+    <div><label>Shipping charged to buyer</label><input id="s_s" type="number" step="0.01" value="${e.shipping_charged}"></div>
+    <div><label>Discount</label><input id="s_x" type="number" step="0.01" value="${e.discount}"></div>
+    <div><label>Postage you paid</label><input id="s_pc" type="number" step="0.01" value="${e.postage_cost}"></div>
+    <div><label>Etsy fees (blank = auto-calculate)</label><input id="s_f" type="number" step="0.01" value="${s ? e.fees : ''}"></div>
+    <div class="full"><label><input type="checkbox" id="s_ad" style="width:auto" ${e.offsite_ad ? 'checked' : ''}> Came via Offsite Ads (adds ad fee when auto-calculating)</label></div>
+    <div class="full"><label>Notes</label><input id="s_n" value="${esc(e.notes)}"></div></div>
+  <div class="bar" style="margin-top:14px"><button class="b" id="ok">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  $('#ok', m).onclick = () => safe(async () => {
+    const body = {date: $('#s_d', m).value, order_ref: $('#s_o', m).value, product_id: $('#s_p', m).value, qty: $('#s_q', m).value, unit_price: $('#s_u', m).value,
+      shipping_charged: $('#s_s', m).value, discount: $('#s_x', m).value, postage_cost: $('#s_pc', m).value, fees: $('#s_f', m).value, offsite_ad: $('#s_ad', m).checked, notes: $('#s_n', m).value};
+    await api(s ? 'PUT' : 'POST', s ? `/api/sales/${s.id}` : '/api/sales', body);
+    m.remove(); route();
+  });
+}
+
+/* ---------------- Expenses ---------------- */
+const CATS = ['Filament', 'Packaging', 'Postage supplies', 'Etsy listing/ads', 'Equipment', 'Software', 'Tools/parts for testing', 'Other'];
+async function expenses() {
+  const L = await api('GET', '/api/expenses');
+  $('#main').innerHTML = `
+  <div class="bar"><button class="b" onclick="addExpense()">+ Add expense</button><span class="sp"></span>
+  <a class="b" style="background:var(--card);border:1px solid var(--line)" href="/api/export/expenses.csv">Export CSV</a></div>
+  <div class="note">Filament used on products is already counted via the print log, so only add filament here if it's <i>not</i> being printed into logged products. Everything else (packaging, ads, test tools, equipment) goes here.</div>
+  <div class="wrap"><table><tr><th>Date</th><th>Category</th><th>Description</th><th class="r">Amount</th><th></th></tr>
+  ${L.map(x => `<tr><td>${x.date}</td><td>${esc(x.category)}</td><td>${esc(x.description)}</td><td class="r">${money(x.amount)}</td><td><button class="g" onclick="del('expenses',${x.id})">✕</button></td></tr>`).join('') || '<tr><td colspan=5 class="mute">None yet.</td></tr>'}
+  </table></div>`;
+}
+function addExpense() {
+  const m = modal(`<h2 style="margin-top:0">Add expense</h2><div class="grid">
+    <div><label>Date</label><input id="e_d" type="date" value="${today()}"></div>
+    <div><label>Amount (${cur()})</label><input id="e_a" type="number" step="0.01"></div>
+    <div class="full"><label>Category</label><select id="e_c">${CATS.map(c => `<option>${c}</option>`).join('')}</select></div>
+    <div class="full"><label>Description</label><input id="e_t"></div></div>
+  <div class="bar" style="margin-top:14px"><button class="b" id="ok">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  $('#ok', m).onclick = () => safe(async () => {
+    await api('POST', '/api/expenses', {date: $('#e_d', m).value, amount: $('#e_a', m).value, category: $('#e_c', m).value, description: $('#e_t', m).value});
+    m.remove(); route();
+  });
+}
+async function del(t, id) { if (confirm('Delete this entry?')) await safe(async () => { await api('DELETE', `/api/${t}/${id}`); route(); }); }
+
+/* ---------------- Import ---------------- */
+async function importView() {
+  $('#main').innerHTML = `<div class="note">
+    Download your orders from Etsy: <b>Shop Manager → Settings → Options → Download Data</b>, pick <b>Order Items</b> and a date range, then upload the CSV here.
+    Items are matched to products by SKU, then by exact name; unknown items create a new product (set its cost afterwards).
+    Order IDs already imported are skipped, so re-importing an overlapping range is safe. Fees are auto-calculated from your Settings rates; postage you paid isn't in the CSV so add it by editing the sale.</div>
+  <input type="file" id="csv" accept=".csv" style="max-width:340px"> <button class="b" id="go">Import</button><div id="res" style="margin-top:12px"></div>`;
+  $('#go').onclick = () => safe(async () => {
+    const f = $('#csv').files[0]; if (!f) throw new Error('Choose a CSV file first.');
+    const fd = new FormData(); fd.append('file', f);
+    const r = await fetch('/api/import/etsy', {method: 'POST', body: fd}); const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    $('#res').innerHTML = `<div class="card">Imported <b>${j.added}</b> sale lines · skipped ${j.skipped_duplicates} duplicates · created ${j.products_created} new products</div>`;
+  });
+}
+
+/* ---------------- Settings ---------------- */
+async function settingsView() {
+  const f = (k, l, t = 'text') => `<div><label>${l}</label><input data-k="${k}" type="${t}" step="any" value="${esc(S[k])}"></div>`;
+  $('#main').innerHTML = `
+  <h2 style="margin-top:0">Bambuddy link</h2>
+  <div class="grid" style="max-width:700px">
+    <div class="full"><label>Bambuddy URL (e.g. http://192.168.1.10:8000)</label><input data-k="bambuddy_url" value="${esc(S.bambuddy_url)}"></div>
+    <div class="full"><label>API key ${S.bambuddy_key_set ? '(saved — leave as is to keep)' : ''}</label><input data-k="bambuddy_key" type="password" value="${esc(S.bambuddy_key)}"></div>
+    ${f('default_cost_per_kg', 'Fallback filament £/kg (if an archive has no cost)', 'number')}
+  </div>
+  <p class="mute">In Bambuddy create an API key with the <b>Read Status</b> permission (Settings → API Keys).</p>
+  <div class="bar"><button class="g" id="test">Test connection</button><span id="tres"></span></div>
+  <h2>Etsy fee rates (used when a sale's fees are left blank)</h2>
+  <div class="grid" style="max-width:700px">
+    ${f('currency', 'Currency symbol')}${f('fee_transaction_pct', 'Transaction fee %', 'number')}
+    ${f('fee_processing_pct', 'Payment processing %', 'number')}${f('fee_processing_fixed', 'Payment processing fixed per order', 'number')}
+    ${f('fee_regulatory_pct', 'Regulatory operating fee %', 'number')}${f('fee_listing_per_item', 'Listing/renewal fee per item sold', 'number')}
+    ${f('fee_vat_pct', 'VAT on fees %', 'number')}${f('fee_offsite_ads_pct', 'Offsite ads fee %', 'number')}
+  </div>
+  <p class="mute">These are starting defaults — compare a few sales against your Etsy payment statement and tweak until they match. Fees already saved on past sales don't change.</p>
+  <div class="bar"><button class="b" id="save">Save settings</button><span class="sp"></span><a class="b" style="background:var(--card);border:1px solid var(--line)" href="/api/backup">Download database backup</a></div>`;
+  const collect = () => Object.fromEntries([...document.querySelectorAll('[data-k]')].map(e => [e.dataset.k, e.value]));
+  $('#save').onclick = () => safe(async () => { await api('PUT', '/api/settings', collect()); toast('Saved'); route(); });
+  $('#test').onclick = () => safe(async () => {
+    await api('PUT', '/api/settings', collect());
+    try { const r = await api('GET', '/api/bambuddy/test'); $('#tres').innerHTML = `<span class="good">Connected${r.spools != null ? ' · ' + r.spools + ' spools found' : ''}</span>`; }
+    catch (e) { $('#tres').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  });
+}
+
+const VIEWS = {dashboard, products, stock, sales, expenses, import: importView, settings: settingsView};
+route();
+</script>
+</body>
+</html>
