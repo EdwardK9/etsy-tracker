@@ -18,6 +18,17 @@ body{margin:0;background:radial-gradient(1200px 500px at 70% -10%,var(--glow),tr
 .theme{margin-top:auto;display:flex;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--line);color:var(--mute);border-radius:10px;padding:8px 12px;cursor:pointer;font:inherit;font-weight:500}
 .theme:hover{color:var(--text);border-color:var(--acc)}
 .theme svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.kan{display:grid;grid-template-columns:repeat(4,minmax(220px,1fr));gap:14px;align-items:start;overflow-x:auto}
+.kcol{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px;min-height:120px}
+.kcol h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--mute);display:flex;justify-content:space-between}
+.ocard{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:9px;font-size:13px}
+.ocard .it{margin:4px 0;line-height:1.35}.ocard .var{color:var(--acc);font-size:12px}
+.ocard .oh{display:flex;justify-content:space-between;color:var(--mute);font-size:12px;margin-bottom:4px}
+.ocard .acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.st{font-size:11px;padding:3px 9px;border-radius:20px;font-weight:600;background:#ff7a3d1f;color:var(--acc)}
+.st.shipped{background:#34d3991a;color:var(--good)}
+.print-only{display:none}
+@media print{.side,.top,.kan,.no-print,#toast{display:none!important}.print-only{display:block!important;color:#000}.print-only .slip{page-break-inside:avoid;border:1px solid #000;padding:10px;margin-bottom:10px;font-size:13px}body{background:#fff}.app,main{display:block!important;padding:0!important}}
 @media(max-width:820px){.theme{margin:0 0 0 auto;padding:8px}.theme span{display:none}}
 .ver{display:block;font-size:11px;font-weight:500;color:var(--mute);letter-spacing:0;margin-top:1px}
 .logo svg{width:18px;height:18px;stroke:#fff}
@@ -85,6 +96,7 @@ const ICONS = {
   logo:'<path d="M3 9l1.5-5h15L21 9M3 9v11h18V9M3 9h18M9 20v-6h6v6"/>',
   dashboard:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
   products:'<path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8M12 13v8"/>',
+  orders:'<rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="10" y="4" width="5" height="11" rx="1.5"/><rect x="17" y="4" width="4" height="7" rx="1.5"/>',
   stock:'<path d="M6 9V3h12v6M4 9h16v8H4zM8 17v4M16 17v4"/>',
   sales:'<path d="M3 3h2l2.4 11.4a2 2 0 002 1.6h8.2a2 2 0 002-1.5L21 7H6"/><circle cx="10" cy="20" r="1.3"/><circle cx="17" cy="20" r="1.3"/>',
   expenses:'<rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20M6 15h4"/>',
@@ -123,7 +135,7 @@ function toast(msg, bad) {
 }
 async function safe(fn) { try { await fn(); } catch (e) { toast(e.message, true); } }
 
-const TABS = [['dashboard','Dashboard'],['products','Products'],['listings','Listings'],['templates','Templates'],['pricing','Pricing'],['stock','Printing & Stock'],['filament','Filament'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
+const TABS = [['dashboard','Dashboard'],['products','Products'],['listings','Listings'],['templates','Templates'],['pricing','Pricing'],['stock','Printing & Stock'],['filament','Filament'],['orders','Orders'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
 const TITLES = Object.fromEntries(TABS);
 const SUN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4l1.4-1.4"/></svg>';
 const MOON = '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>';
@@ -596,10 +608,10 @@ async function sales() {
   const L = await api('GET', '/api/sales');
   $('#main').innerHTML = `
 <div class="top"><h1>Sales</h1><span class="sp"></span>${S.etsy_connected ? '<button class="b alt" onclick="quickSync()">↻ Sync from Etsy</button>' : ''}<a class="b alt" href="/api/export/sales.csv">Export CSV</a><button class="b" onclick="editSale()">+ Record sale</button></div>
-  <div class="wrap"><table><tr><th>Date</th><th>Order</th><th>Product</th><th class="r">Qty</th><th class="r">Revenue</th><th class="r">Fees</th><th class="r">Postage</th><th class="r">Profit</th><th></th></tr>
+  <div class="wrap"><table><tr><th>Date</th><th>Order</th><th>Product</th><th class="r">Qty</th><th class="r">Revenue</th><th class="r">Fees</th><th class="r">Postage</th><th class="r">Profit</th><th>Status</th><th></th></tr>
   ${L.map(s => `<tr><td>${s.date}</td><td class="mute">${esc(s.order_ref)}</td><td>${esc(s.product)}</td><td class="r">${s.qty}</td><td class="r">${money(s.revenue)}</td>
-    <td class="r">${money(s.fees)}</td><td class="r">${money(s.postage_cost)}</td><td class="r ${cls(s.profit)}">${money(s.profit)}</td>
-    <td><button class="g" onclick='editSale(${JSON.stringify(s).replace(/'/g, '&#39;')})'>Edit</button> <button class="g" onclick="del('sales',${s.id})">✕</button></td></tr>`).join('') || '<tr><td colspan=9 class="mute">No sales yet.</td></tr>'}
+    <td class="r">${money(s.fees)}</td><td class="r">${money(s.postage_cost)}</td><td class="r ${cls(s.profit)}">${money(s.profit)}</td><td><span class="st ${s.status === 'shipped' ? 'shipped' : ''}">${(s.status || 'shipped').replace('_', ' ')}</span></td>
+    <td><button class="g" onclick='editSale(${JSON.stringify(s).replace(/'/g, '&#39;')})'>Edit</button> <button class="g" onclick="del('sales',${s.id})">✕</button></td></tr>`).join('') || '<tr><td colspan=10 class="mute">No sales yet.</td></tr>'}
   </table></div>`;
 }
 async function quickSync() { await safe(async () => { toast('Syncing from Etsy…'); const r = await api('POST', '/api/etsy/sync', {}); toast(`Imported ${r.added} new sale lines`); route(); }); }
@@ -624,6 +636,51 @@ function editSale(s) {
       shipping_charged: $('#s_s', m).value, discount: $('#s_x', m).value, postage_cost: $('#s_pc', m).value, fees: $('#s_f', m).value, offsite_ad: $('#s_ad', m).checked, notes: $('#s_n', m).value};
     await api(s ? 'PUT' : 'POST', s ? `/api/sales/${s.id}` : '/api/sales', body);
     m.remove(); route();
+  });
+}
+
+/* ---------------- Orders ---------------- */
+const STAGES = [['to_print','To print'],['printing','Printing'],['to_ship','To ship'],['shipped','Shipped']];
+let ORDERS = [];
+async function orders() {
+  ORDERS = await api('GET', '/api/orders');
+  const by = k => ORDERS.filter(o => o.status === k);
+  const need = {};
+  ORDERS.filter(o => o.status === 'to_print' || o.status === 'printing').forEach(o => o.items.forEach(i => {
+    if (i.status === 'shipped') return;
+    const key = i.product + (i.variation ? ' — ' + i.variation : '');
+    need[key] = (need[key] || 0) + i.qty; }));
+  const shipped = by('shipped').slice(0, 15);
+  const card = o => `<div class="ocard"><div class="oh"><span>${o.order_ref ? '#' + esc(o.order_ref) : 'Manual'}</span><span>${o.date}</span></div>
+    ${o.items.map(i => `<div class="it"><b>${i.qty}×</b> ${esc(i.product)}${i.variation ? `<div class="var">${esc(i.variation)}</div>` : ''}${i.status !== o.status && o.status !== 'shipped' ? ` <span class="mute">(${i.status.replace('_', ' ')})</span>` : ''}</div>`).join('')}
+    <div class="oh"><span>${money(o.revenue)}</span>${o.tracking ? `<span>📦 ${esc(o.tracking)}</span>` : ''}</div>
+    <div class="acts">${o.status === 'to_print' ? `<button class="b alt" onclick="moveOrder('${o.key}','printing')">Start printing</button>` : ''}
+    ${o.status === 'printing' ? `<button class="b alt" onclick="moveOrder('${o.key}','to_ship')">Printed ✓</button>` : ''}
+    ${o.status === 'to_ship' ? `<button class="b" onclick="shipOrder('${o.key}')">Mark shipped…</button>` : ''}
+    ${o.status !== 'to_print' && o.status !== 'shipped' ? `<button class="g" onclick="moveOrder('${o.key}','to_print')">↩</button>` : ''}</div></div>`;
+  $('#main').innerHTML = `
+<div class="top"><h1>Orders</h1><span class="sp"></span>${S.etsy_connected ? '<button class="b alt" onclick="quickSync().then(()=>{})">↻ Sync from Etsy</button>' : ''}<button class="b alt" onclick="window.print()">Print packing list</button></div>
+  ${S.etsy_connected && !S.etsy_can_ship ? '<div class="note">To send tracking to Etsy from here, re-authorise in Settings → Etsy (new “transactions_w” permission). Marking shipped locally works regardless.</div>' : ''}
+  ${Object.keys(need).length ? `<div class="note"><b>To print:</b> ${Object.entries(need).map(([k, n]) => `${n}× ${esc(k)}`).join(' · ')}</div>` : ''}
+  <div class="kan">${STAGES.map(([k, l]) => `<div class="kcol"><h3><span>${l}</span><span>${k === 'shipped' ? by(k).length : by(k).length}</span></h3>${(k === 'shipped' ? shipped : by(k)).map(card).join('') || '<div class="mute" style="font-size:12px">Nothing here</div>'}</div>`).join('')}</div>
+  <div class="print-only"><h2>Packing list</h2>${by('to_ship').map(o => `<div class="slip"><b>${o.order_ref ? 'Order #' + esc(o.order_ref) : 'Manual order'}</b> — ${o.date}${o.items.map(i => `<div>☐ ${i.qty}× ${esc(i.product)}${i.variation ? ' — ' + esc(i.variation) : ''}</div>`).join('')}</div>`).join('') || '<p>Nothing waiting to ship.</p>'}</div>`;
+}
+const orderByKey = k => ORDERS.find(o => o.key === k);
+async function moveOrder(k, st) { const o = orderByKey(k); await safe(async () => { await api('POST', '/api/orders/status', {status: st, sale_ids: o.items.filter(i => i.status !== 'shipped').map(i => i.id)}); route(); }); }
+async function shipOrder(k) {
+  const o = orderByKey(k);
+  let carriers = [];
+  if (S.etsy_can_ship) { try { carriers = await api('GET', '/api/etsy/carriers'); } catch (e) {} }
+  const canPush = S.etsy_can_ship && /^\d+$/.test(o.order_ref || '');
+  const m = modal(`<h2 style="margin-top:0">Mark order ${o.order_ref ? '#' + esc(o.order_ref) : ''} shipped</h2><div class="grid">
+    <div><label>Tracking number</label><input id="o_t"></div>
+    <div><label>Carrier</label><input id="o_c" list="o_cl" placeholder="e.g. Royal Mail"><datalist id="o_cl">${carriers.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
+    <div><label>Postage you paid (£)</label><input id="o_p" type="number" step="0.01" value="${S.default_postage_cost || ''}"></div>
+    <div class="full"><label><input type="checkbox" id="o_push" style="width:auto" ${canPush ? 'checked' : 'disabled'}> Send tracking to Etsy &amp; mark as shipped there${canPush ? '' : ' (needs Etsy order + re-authorise)'}</label></div></div>
+  <div class="bar" style="margin-top:14px"><button class="b" id="ok">Mark shipped</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  $('#ok', m).onclick = () => safe(async () => {
+    const r = await api('POST', '/api/orders/ship', {sale_ids: o.items.filter(i => i.status !== 'shipped').map(i => i.id), tracking_code: $('#o_t', m).value, carrier: $('#o_c', m).value, postage_cost: $('#o_p', m).value, push: $('#o_push', m).checked});
+    m.remove(); if (r.warning) toast(r.warning, true); route();
   });
 }
 
@@ -751,7 +808,7 @@ async function settingsView() {
   });
 }
 
-const VIEWS = {dashboard, products, listings, templates, pricing, filament, stock, sales, expenses, import: importView, settings: settingsView};
+const VIEWS = {dashboard, products, listings, templates, pricing, filament, stock, orders, sales, expenses, import: importView, settings: settingsView};
 route();
 </script>
 </body>

@@ -10,7 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -165,6 +165,8 @@ TEMPLATE_MIGRATIONS = [
     ("var_name", "TEXT DEFAULT ''"), ("var_source", "TEXT DEFAULT 'none'"), ("var_options", "TEXT DEFAULT ''"),
     ("var_material", "TEXT DEFAULT 'PLA'"), ("personalisation", "TEXT DEFAULT ''"),
 ]
+SALE_MIGRATIONS = [("status", "TEXT DEFAULT 'shipped'"), ("variation", "TEXT DEFAULT ''"),
+                   ("tracking", "TEXT DEFAULT ''"), ("shipped_at", "TEXT DEFAULT ''")]
 IMG_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "images")
 os.makedirs(IMG_DIR, exist_ok=True)
 
@@ -235,6 +237,10 @@ def init_db():
     for col, decl in PRODUCT_MIGRATIONS:
         if col not in have:
             con.execute(f"ALTER TABLE products ADD COLUMN {col} {decl}")
+    have_s = {r[1] for r in con.execute("PRAGMA table_info(sales)")}
+    for col, decl in SALE_MIGRATIONS:
+        if col not in have_s:
+            con.execute(f"ALTER TABLE sales ADD COLUMN {col} {decl}")
     have_t = {r[1] for r in con.execute("PRAGMA table_info(listing_templates)")}
     for col, decl in TEMPLATE_MIGRATIONS:
         if col not in have_t:
@@ -284,6 +290,31 @@ def unit_cost_of(p):
     return round(per_plate / ipp + num(p.get("extra_cost")) + num(p.get("labour_minutes")) / 60.0 * labour_rate(), 4)
 
 
+def stock_of(pid):
+    r = one("""SELECT COALESCE((SELECT SUM(qty_good) FROM batches WHERE product_id=?),0) AS made,
+                      COALESCE((SELECT SUM(qty) FROM sales WHERE product_id=?),0) AS sold""", (pid, pid))
+    return r["made"] - r["sold"]
+
+
+def initial_status(pid):
+    """After a sale is saved: if we are not short of stock the order can ship, otherwise it needs printing."""
+    return "to_ship" if stock_of(pid) >= 0 else "to_print"
+
+
+def release_backorders(pid):
+    """After printing: move the oldest waiting lines to 'to_ship' while stock covers them."""
+    waiting = rows("SELECT id,qty FROM sales WHERE product_id=? AND status IN ('to_print','printing') ORDER BY date,id", (pid,))
+    if not waiting:
+        return
+    backlog = sum(w["qty"] for w in waiting)
+    available = stock_of(pid) + backlog  # units made that are not already allocated to shipped/ready orders
+    for w in waiting:
+        if available >= w["qty"]:
+            db().execute("UPDATE sales SET status='to_ship' WHERE id=?", (w["id"],))
+            available -= w["qty"]
+    db().commit()
+
+
 def calc_fees(gross, qty, offsite, s):
     f = gross * (num(s["fee_transaction_pct"]) + num(s["fee_regulatory_pct"]) + num(s["fee_processing_pct"])) / 100
     f += num(s["fee_processing_fixed"]) + num(s["fee_listing_per_item"]) * qty
@@ -317,6 +348,7 @@ def api_settings():
         s[k] = ""  # never send secrets back to the browser
     s["etsy_connected"] = bool(s.get("etsy_refresh_token_set") and s.get("etsy_shop_id"))
     s["etsy_can_list"] = "listings_w" in (s.get("etsy_scopes") or "")
+    s["etsy_can_ship"] = "transactions_w" in (s.get("etsy_scopes") or "")
     return jsonify(s)
 
 
@@ -534,6 +566,7 @@ def api_batches():
                      (p["id"], d.get("date") or today(), int(num(d.get("qty_good"))), int(num(d.get("qty_failed"))),
                       uc, d.get("notes", "")))
         db().commit()
+        release_backorders(p["id"])
         return jsonify({"ok": True})
     return jsonify(rows("""SELECT b.*, p.name AS product FROM batches b JOIN products p ON p.id=b.product_id
                            ORDER BY b.date DESC, b.id DESC"""))
@@ -574,6 +607,8 @@ def api_sales():
                offsite_ad,fees,unit_cost,source,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (d.get("date") or today(), d.get("order_ref", ""), p["id"], qty, price, ship, disc,
              num(d.get("postage_cost")), offsite, fees, unit_cost_of(p), "manual", d.get("notes", "")))
+        sid = db().execute("SELECT last_insert_rowid()").fetchone()[0]
+        db().execute("UPDATE sales SET status=? WHERE id=?", (initial_status(p["id"]), sid))
         db().commit()
         return jsonify({"ok": True})
     return jsonify(rows("""SELECT s.*, p.name AS product,
@@ -819,7 +854,7 @@ import time
 
 ETSY_API = "https://api.etsy.com/v3/application"
 ETSY_TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token"
-ETSY_SCOPES = "transactions_r shops_r listings_r listings_w"
+ETSY_SCOPES = "transactions_r transactions_w shops_r listings_r listings_w"
 
 
 class EtsyError(Exception):
@@ -969,9 +1004,16 @@ def api_etsy_sync():
                         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (cur.lastrowid, "price", price))
                         p = one("SELECT * FROM products WHERE id=?", (cur.lastrowid,))
                         created += 1
-                    if one("SELECT 1 AS x FROM sales WHERE order_ref=? AND product_id=?", (order, p["id"])):
+                    var_text = "; ".join(f"{v.get('formatted_name')}: {v.get('formatted_value')}" for v in (t.get("variations") or []) if v.get("formatted_value"))
+                    dup = one("SELECT id,status,variation FROM sales WHERE order_ref=? AND product_id=? AND (variation=? OR variation='' OR ?='')", (order, p["id"], var_text, var_text))
+                    if dup:
                         skipped += 1
                         first = False
+                        upd = []
+                        if r.get("is_shipped") and dup["status"] != "shipped":
+                            db().execute("UPDATE sales SET status='shipped' WHERE id=?", (dup["id"],))
+                        if var_text and not dup["variation"]:
+                            db().execute("UPDATE sales SET variation=? WHERE id=?", (var_text, dup["id"]))
                         continue
                     d = dict(qty=t.get("quantity") or 1, unit_price=money_of(t.get("price")),
                              shipping_charged=money_of(r.get("total_shipping_cost")) if first else 0,
@@ -980,8 +1022,11 @@ def api_etsy_sync():
                     qty, price, ship, disc, offsite, fees = sale_values(d, p, s)
                     db().execute(
                         """INSERT INTO sales(date,order_ref,product_id,qty,unit_price,shipping_charged,discount,postage_cost,
-                           offsite_ad,fees,unit_cost,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (date, order, p["id"], qty, price, ship, disc, 0, 0, fees, unit_cost_of(p), "etsy-api"))
+                           offsite_ad,fees,unit_cost,source,variation,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (date, order, p["id"], qty, price, ship, disc, 0, 0, fees, unit_cost_of(p), "etsy-api", var_text, "shipped"))
+                    sid = db().execute("SELECT last_insert_rowid()").fetchone()[0]
+                    if not r.get("is_shipped"):
+                        db().execute("UPDATE sales SET status=? WHERE id=?", (initial_status(p["id"]), sid))
                     added += 1
             db().commit()
             if len(results) < 100:
@@ -1388,6 +1433,82 @@ def api_bb_colours():
         c["spools"] += 1
     res = [dict(c, grams=round(c["grams"]), in_stock=c["grams"] >= min_g) for c in out.values()]
     return jsonify(sorted(res, key=lambda c: (-c["in_stock"], c["name"].lower())))
+
+
+# ---------------------------------------------------------------- order pipeline
+PIPE = ["to_print", "printing", "to_ship", "shipped"]
+
+
+@app.route("/api/orders")
+def api_orders():
+    ls = rows("""SELECT s.id,s.date,s.order_ref,s.product_id,s.qty,s.status,s.variation,s.tracking,s.shipped_at,s.notes,
+                 (s.unit_price*s.qty + s.shipping_charged - s.discount) AS revenue, p.name AS product
+                 FROM sales s JOIN products p ON p.id=s.product_id ORDER BY s.date DESC, s.id DESC""")
+    orders = {}
+    for l in ls:
+        key = l["order_ref"] or f"sale-{l['id']}"
+        o = orders.setdefault(key, {"key": key, "order_ref": l["order_ref"], "date": l["date"], "items": [], "revenue": 0.0,
+                                    "tracking": "", "shipped_at": ""})
+        o["items"].append(l)
+        o["revenue"] = round(o["revenue"] + l["revenue"], 2)
+        o["tracking"] = o["tracking"] or l["tracking"]
+        o["shipped_at"] = o["shipped_at"] or l["shipped_at"]
+    out = []
+    for o in orders.values():
+        o["status"] = min((i["status"] for i in o["items"]), key=lambda x: PIPE.index(x) if x in PIPE else 3)
+        out.append(o)
+    return jsonify(out)
+
+
+@app.route("/api/orders/status", methods=["POST"])
+def api_orders_status():
+    d = request.get_json(force=True)
+    st = d.get("status")
+    if st not in PIPE:
+        return jsonify({"error": "bad status"}), 400
+    for sid in d.get("sale_ids", []):
+        db().execute("UPDATE sales SET status=? WHERE id=?", (st, int(sid)))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/orders/ship", methods=["POST"])
+def api_orders_ship():
+    d = request.get_json(force=True)
+    ids = [int(x) for x in d.get("sale_ids", [])]
+    if not ids:
+        return jsonify({"error": "no items"}), 400
+    s = settings()
+    first = one("SELECT order_ref FROM sales WHERE id=?", (ids[0],))
+    warning = None
+    if d.get("push") and first and (first["order_ref"] or "").isdigit():
+        try:
+            body = {"tracking_code": d.get("tracking_code", ""), "carrier_name": d.get("carrier", ""), "send_bcc": False}
+            if d.get("note"):
+                body["note_to_buyer"] = d["note"]
+            etsy_send("POST", f"/shops/{s['etsy_shop_id']}/receipts/{first['order_ref']}/tracking", json_body=body)
+        except EtsyError as e:
+            warning = "Marked shipped here, but Etsy didn't accept the tracking: " + str(e)
+    stamp = today()
+    for sid in ids:
+        db().execute("UPDATE sales SET status='shipped', tracking=?, shipped_at=? WHERE id=?", (d.get("tracking_code", ""), stamp, sid))
+    pc = num(d.get("postage_cost"))
+    if pc > 0:
+        db().execute("UPDATE sales SET postage_cost=? WHERE id=?", (pc, ids[0]))
+        for sid in ids[1:]:
+            db().execute("UPDATE sales SET postage_cost=0 WHERE id=? AND postage_cost=0", (sid,))
+    db().commit()
+    return jsonify({"ok": True, "warning": warning})
+
+
+@app.route("/api/etsy/carriers")
+def api_etsy_carriers():
+    try:
+        s = settings()
+        d = http_json(ETSY_API + "/shipping-carriers?origin_country_iso=GB", headers=etsy_headers(s))
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify(sorted({c["name"] for c in d.get("results", []) if c.get("name")}))
 
 
 init_db()
