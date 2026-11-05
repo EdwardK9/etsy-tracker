@@ -10,7 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -49,6 +49,7 @@ DEFAULT_SETTINGS = {
     "listing_quantity": "5",
     "listing_default_tags": "",
     "listing_materials": "PLA",
+    "colour_min_remaining_g": "50",
     "listing_desc_template": "{name}\n\n[Describe what it fits, size, colour options and anything the buyer should check before ordering.]",
 }
 SECRET_KEYS = ("bambuddy_key", "etsy_secret", "etsy_access_token", "etsy_refresh_token", "etsy_oauth_verifier", "etsy_oauth_state")
@@ -151,6 +152,11 @@ PRODUCT_MIGRATIONS = [
     ("l_title", "TEXT DEFAULT ''"), ("l_desc", "TEXT DEFAULT ''"), ("l_tags", "TEXT DEFAULT ''"),
     ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
     ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
+    ("l_var_name", "TEXT DEFAULT ''"), ("l_var_options", "TEXT DEFAULT ''"), ("l_personalisation", "TEXT DEFAULT ''"),
+]
+TEMPLATE_MIGRATIONS = [
+    ("var_name", "TEXT DEFAULT ''"), ("var_source", "TEXT DEFAULT 'none'"), ("var_options", "TEXT DEFAULT ''"),
+    ("var_material", "TEXT DEFAULT 'PLA'"), ("personalisation", "TEXT DEFAULT ''"),
 ]
 IMG_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "images")
 os.makedirs(IMG_DIR, exist_ok=True)
@@ -210,8 +216,9 @@ SEED_TEMPLATES = [
 def seed_templates(con):
     if con.execute("SELECT COUNT(*) FROM listing_templates").fetchone()[0] == 0:
         for name, title, desc, tags in SEED_TEMPLATES:
-            con.execute("INSERT INTO listing_templates(name,title,description,tags,materials,quantity) VALUES(?,?,?,?,?,?)",
-                        (name, title, desc, tags, "PLA", 5))
+            con.execute("""INSERT INTO listing_templates(name,title,description,tags,materials,quantity,var_name,var_source,var_material,personalisation)
+                           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                        (name, title, desc, tags, "PLA", 5, "Colour", "spools", "PLA", ""))
 
 
 def init_db():
@@ -221,6 +228,10 @@ def init_db():
     for col, decl in PRODUCT_MIGRATIONS:
         if col not in have:
             con.execute(f"ALTER TABLE products ADD COLUMN {col} {decl}")
+    have_t = {r[1] for r in con.execute("PRAGMA table_info(listing_templates)")}
+    for col, decl in TEMPLATE_MIGRATIONS:
+        if col not in have_t:
+            con.execute(f"ALTER TABLE listing_templates ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
         con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
     seed_templates(con)
@@ -990,7 +1001,7 @@ def etsy_auth_headers():
     return s, etsy_headers(s, s["etsy_access_token"])
 
 
-def etsy_send(method, path, form=None, files=None, fields=None):
+def etsy_send(method, path, form=None, files=None, fields=None, json_body=None):
     s, h = etsy_auth_headers()
     url = ETSY_API + path
     if files:
@@ -1003,6 +1014,9 @@ def etsy_send(method, path, form=None, files=None, fields=None):
         parts.append(f"--{boundary}--\r\n".encode())
         data = b"".join(parts)
         h["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    elif json_body is not None:
+        data = json.dumps(json_body).encode()
+        h["Content-Type"] = "application/json"
     else:
         data = urllib.parse.urlencode(form).encode() if form is not None else None
         if data is not None:
@@ -1091,9 +1105,11 @@ def api_listing_save(pid):
     p = one("SELECT * FROM products WHERE id=?", (pid,))
     if not p:
         return jsonify({"error": "not found"}), 404
-    db().execute("""UPDATE products SET l_title=?,l_desc=?,l_tags=?,l_materials=?,l_qty=?,taxonomy_id=?,taxonomy_name=? WHERE id=?""",
+    db().execute("""UPDATE products SET l_title=?,l_desc=?,l_tags=?,l_materials=?,l_qty=?,taxonomy_id=?,taxonomy_name=?,
+                    l_var_name=?,l_var_options=?,l_personalisation=? WHERE id=?""",
                  (d.get("l_title", "")[:140], d.get("l_desc", ""), d.get("l_tags", ""), d.get("l_materials", ""),
-                  int(num(d.get("l_qty"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", ""), pid))
+                  int(num(d.get("l_qty"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", ""),
+                  d.get("l_var_name", ""), d.get("l_var_options", ""), d.get("l_personalisation", ""), pid))
     db().commit()
     return jsonify({"ok": True})
 
@@ -1215,7 +1231,34 @@ def api_etsy_draft(pid):
                       files={"image": (im["filename"], open(path, "rb").read(), ctype)})
         except (EtsyError, OSError) as e:
             warnings.append(str(e))
-    return jsonify({"ok": True, "listing_id": lid, "url": url, "warnings": warnings})
+    options = [o.strip() for o in (p["l_var_options"] or "").split("|") if o.strip()]
+    if options and (p["l_var_name"] or "").strip():
+        try:
+            push_variations(s, lid, p, options, qty)
+        except EtsyError as e:
+            warnings.append("Variations weren't added: " + str(e))
+    return jsonify({"ok": True, "listing_id": lid, "url": url, "warnings": warnings,
+                    "personalisation": p["l_personalisation"] or "", "variations": len(options)})
+
+
+def push_variations(s, lid, p, options, qty):
+    vname = re.sub(r"[()]", "", p["l_var_name"].strip())[:45]
+    seen, products = set(), []
+    for o in options:
+        o = re.sub(r"[()]", "", o).strip()[:20]
+        if not o or o.lower() in seen:
+            continue
+        seen.add(o.lower())
+        off = {"price": round(float(p["price"]), 2), "quantity": qty, "is_enabled": True}
+        if s.get("listing_readiness_state_id"):
+            off["readiness_state_id"] = int(s["listing_readiness_state_id"])
+        prod = {"property_values": [{"property_id": 513, "property_name": vname, "value_ids": [], "values": [o]}], "offerings": [off]}
+        if p["sku"]:
+            prod["sku"] = (p["sku"] + "-" + re.sub(r"[^A-Za-z0-9]+", "", o).upper())[:32]
+        products.append(prod)
+    if not products:
+        return
+    etsy_send("PUT", f"/listings/{lid}/inventory", json_body={"products": products, "price_on_property": [], "quantity_on_property": [], "sku_on_property": []})
 
 
 @app.route("/api/products/<int:pid>/unlink-listing", methods=["POST"])
@@ -1231,12 +1274,19 @@ def api_templates():
     if request.method == "POST":
         d = request.get_json(force=True)
         cur = db().execute(
-            "INSERT INTO listing_templates(name,title,description,tags,materials,quantity,taxonomy_id,taxonomy_name) VALUES(?,?,?,?,?,?,?,?)",
-            (d.get("name", "").strip() or "New template", d.get("title", ""), d.get("description", ""), d.get("tags", ""),
-             d.get("materials", ""), int(num(d.get("quantity"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", "")))
+            """INSERT INTO listing_templates(name,title,description,tags,materials,quantity,taxonomy_id,taxonomy_name,
+               var_name,var_source,var_options,var_material,personalisation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tpl_values(d))
         db().commit()
         return jsonify({"id": cur.lastrowid})
     return jsonify(rows("SELECT * FROM listing_templates ORDER BY id"))
+
+
+def tpl_values(d):
+    return ((d.get("name", "").strip() or "New template"), d.get("title", ""), d.get("description", ""), d.get("tags", ""),
+            d.get("materials", ""), int(num(d.get("quantity"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", ""),
+            d.get("var_name", ""), d.get("var_source", "none"), d.get("var_options", ""), d.get("var_material", "PLA"),
+            d.get("personalisation", ""))
 
 
 @app.route("/api/templates/<int:tid>", methods=["PUT", "DELETE"])
@@ -1246,11 +1296,37 @@ def api_template(tid):
         db().commit()
         return jsonify({"ok": True})
     d = request.get_json(force=True)
-    db().execute("""UPDATE listing_templates SET name=?,title=?,description=?,tags=?,materials=?,quantity=?,taxonomy_id=?,taxonomy_name=? WHERE id=?""",
-                 (d.get("name", "").strip() or "Template", d.get("title", ""), d.get("description", ""), d.get("tags", ""),
-                  d.get("materials", ""), int(num(d.get("quantity"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", ""), tid))
+    db().execute("""UPDATE listing_templates SET name=?,title=?,description=?,tags=?,materials=?,quantity=?,taxonomy_id=?,taxonomy_name=?,
+                    var_name=?,var_source=?,var_options=?,var_material=?,personalisation=? WHERE id=?""", tpl_values(d) + (tid,))
     db().commit()
     return jsonify({"ok": True})
+
+
+@app.route("/api/bambuddy/colours")
+def api_bb_colours():
+    """Filament colours you currently have (non-archived spools with enough left), grouped by colour name."""
+    material = request.args.get("material", "").strip().lower()
+    s = settings()
+    try:
+        spools = as_list(bb_get("/inventory/spools"))
+    except BBError as e:
+        return jsonify({"error": str(e)}), 502
+    min_g = num(s.get("colour_min_remaining_g"), 50)
+    out = {}
+    for sp in spools:
+        if sp.get("archived_at"):
+            continue
+        if material and (sp.get("material") or "").strip().lower() != material:
+            continue
+        name = (sp.get("color_name") or "").strip()
+        if not name:
+            continue
+        remaining = max(num(sp.get("label_weight"), 1000) - num(sp.get("weight_used")), 0)
+        c = out.setdefault(name.lower(), {"name": name, "grams": 0.0, "spools": 0, "rgba": sp.get("rgba") or ""})
+        c["grams"] += remaining
+        c["spools"] += 1
+    res = [dict(c, grams=round(c["grams"]), in_stock=c["grams"] >= min_g) for c in out.values()]
+    return jsonify(sorted(res, key=lambda c: (-c["in_stock"], c["name"].lower())))
 
 
 init_db()

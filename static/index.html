@@ -316,6 +316,11 @@ async function editListing(id) {
     <div class="full"><label>Tags (comma separated, up to 13, 20 characters each) <span id="l_gc" class="mute"></span></label><input id="l_tags" value="${esc(p.l_tags)}"></div>
     <div><label>Materials</label><input id="l_mat" value="${esc(p.l_materials || S.listing_materials)}"></div>
     <div><label>Stock quantity</label><input id="l_qty" type="number" min="1" value="${p.l_qty || S.listing_quantity || 1}"></div>
+    <div class="full"><label>Variation name (e.g. Colour — leave blank for none)</label><input id="l_vname" value="${esc(p.l_var_name || '')}" placeholder="Colour">
+      <div id="l_vopts" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
+      <div style="display:flex;gap:6px"><input id="l_vadd" placeholder="Add an option…" style="flex:1"><button class="g" id="l_vaddgo">Add</button><button class="g" id="l_vload">Load my filament colours</button></div>
+      <div id="l_vnote" class="mute" style="margin-top:6px;font-size:12px"></div></div>
+    <div class="full"><label>Personalisation wording (to paste on Etsy — the API can’t switch it on)</label><textarea id="l_pers" rows="2">${esc(p.l_personalisation || '')}</textarea></div>
     <div class="full"><label>Category (search Etsy’s categories)</label>
       <div id="l_taxcur" class="mute" style="margin-bottom:6px">${tax.id ? 'Selected: ' + esc(tax.name) : 'None selected'}</div>
       <div style="display:flex;gap:6px"><input id="l_taxq" placeholder="e.g. tool holder, wall mount, battery…" style="flex:1"><button class="g" id="l_taxgo">Search</button></div><div id="l_taxres"></div></div>
@@ -329,12 +334,36 @@ async function editListing(id) {
   const counters = () => { $('#l_tc', m).textContent = `${$('#l_title', m).value.length}/140`; $('#l_gc', m).textContent = `${(($('#l_tags', m).value + ',' + (S.listing_default_tags || '')).split(',').map(x => x.trim()).filter(Boolean).length)}/13 incl. defaults`; };
   m.addEventListener('input', counters); counters();
   $('#l_tpl', m).onclick = () => { $('#l_desc', m).value = defTpl; };
+
+  let vsel = new Set((p.l_var_options || '').split('|').map(x => x.trim()).filter(Boolean)); let vavail = [];
+  const renderVar = () => {
+    const names = [...new Set([...vavail.map(c => c.name), ...vsel])];
+    $('#l_vopts', m).innerHTML = names.map(n => { const c = vavail.find(x => x.name === n);
+      return `<label style="display:flex;align-items:center;gap:6px;margin:0;padding:5px 10px;border:1px solid ${vsel.has(n) ? 'var(--acc)' : 'var(--line)'};border-radius:20px;cursor:pointer;color:var(--text)">
+      <input type="checkbox" data-v="${esc(n)}" ${vsel.has(n) ? 'checked' : ''} style="width:auto">${c && c.rgba ? `<i style="width:11px;height:11px;border-radius:50%;background:#${esc(c.rgba.slice(0, 6))};border:1px solid var(--line)"></i>` : ''}${esc(n)}${c ? ` <span class="${c.in_stock ? 'mute' : 'bad'}" style="font-size:11px">${c.grams}g${c.in_stock ? '' : ' low'}</span>` : ''}</label>`; }).join('') || '<span class="mute">No options yet.</span>';
+    m.querySelectorAll('[data-v]').forEach(cb => cb.onchange = () => { cb.checked ? vsel.add(cb.dataset.v) : vsel.delete(cb.dataset.v); renderVar(); });
+    $('#l_vnote', m).textContent = vsel.size ? `${vsel.size} option${vsel.size > 1 ? 's' : ''} will be added to the draft (Etsy allows up to 70; names are trimmed to 20 characters).` : '';
+  };
+  const loadColours = (material, selectAll) => safe(async () => {
+    vavail = await api('GET', '/api/bambuddy/colours?material=' + encodeURIComponent(material || ''));
+    if (selectAll) vavail.filter(c => c.in_stock).forEach(c => vsel.add(c.name));
+    renderVar();
+    if (!vavail.length) toast('No matching spools found in Bambuddy.', true);
+  });
+  renderVar();
+  $('#l_vload', m).onclick = () => loadColours(S.listing_materials, true);
+  $('#l_vaddgo', m).onclick = () => { const v = $('#l_vadd', m).value.trim(); if (v) { vsel.add(v); $('#l_vadd', m).value = ''; renderVar(); } };
+  $('#l_vadd', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $('#l_vaddgo', m).click(); } };
   const tsel = $('#l_tplsel', m);
   if (tsel) tsel.onchange = () => { const t = TPL.find(x => x.id == tsel.value); if (!t) return;
     const fill = x => (x || '').split('{name}').join(p.name);
     $('#l_title', m).value = fill(t.title).slice(0, 140); $('#l_desc', m).value = fill(t.description); $('#l_tags', m).value = t.tags || '';
     if (t.materials) $('#l_mat', m).value = t.materials; if (t.quantity) $('#l_qty', m).value = t.quantity;
     if (t.taxonomy_id) { tax = {id: t.taxonomy_id, name: t.taxonomy_name}; $('#l_taxcur', m).textContent = 'Selected: ' + tax.name; }
+    $('#l_vname', m).value = t.var_source === 'none' ? '' : (t.var_name || ''); $('#l_pers', m).value = t.personalisation || '';
+    vsel = new Set(); vavail = [];
+    if (t.var_source === 'fixed') { (t.var_options || '').split(/[,|]/).map(x => x.trim()).filter(Boolean).forEach(x => vsel.add(x)); renderVar(); }
+    else if (t.var_source === 'spools') loadColours(t.var_material, true); else renderVar();
     counters(); toast('Template applied — check the [bracketed] bits'); };
   const copy = $('#l_copy', m);
   if (copy) copy.onchange = () => { const o = PRODUCTS.find(x => x.id == copy.value); if (!o) return;
@@ -362,13 +391,14 @@ async function editListing(id) {
     if (!r.ok) throw new Error(j.error); e.target.value = ''; loadImgs();
   });
   const save = () => api('PUT', `/api/products/${id}/listing`, {l_title: $('#l_title', m).value, l_desc: $('#l_desc', m).value, l_tags: $('#l_tags', m).value,
-    l_materials: $('#l_mat', m).value, l_qty: $('#l_qty', m).value, taxonomy_id: tax.id, taxonomy_name: tax.name});
+    l_materials: $('#l_mat', m).value, l_qty: $('#l_qty', m).value, taxonomy_id: tax.id, taxonomy_name: tax.name,
+    l_var_name: $('#l_vname', m).value, l_var_options: [...vsel].join('|'), l_personalisation: $('#l_pers', m).value});
   $('#l_save', m).onclick = () => safe(async () => { await save(); toast('Saved'); route(); });
   $('#l_draft', m).onclick = () => safe(async () => {
     await save(); $('#l_msg', m).innerHTML = '<span class="mute">Creating draft on Etsy…</span>';
     try {
       const r = await api('POST', `/api/products/${id}/etsy-draft`);
-      $('#l_msg', m).innerHTML = `<div class="note"><b class="good">Draft created.</b> <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">Open it on Etsy ↗</a> to finish and publish.${r.warnings.length ? '<br><span class="bad">Photo problems: ' + r.warnings.map(esc).join('; ') + '</span>' : ''}</div>`;
+      $('#l_msg', m).innerHTML = `<div class="note"><b class="good">Draft created.</b> <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">Open it on Etsy ↗</a> to finish and publish.${r.variations ? `<br>${r.variations} ${esc($('#l_vname', m).value)} options added.` : ''}${r.personalisation ? `<br><b>Personalisation:</b> switch it on in Etsy and use this wording: <i>${esc(r.personalisation)}</i>` : ''}${r.warnings.length ? '<br><span class="bad">Photo problems: ' + r.warnings.map(esc).join('; ') + '</span>' : ''}</div>`;
       route();
     } catch (e) { $('#l_msg', m).innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
   });
@@ -385,14 +415,14 @@ async function templates() {
   <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">
   ${TEMPLATES.map(t => `<div class="card"><div style="font-weight:600;font-size:15px">${esc(t.name)}</div>
     <div class="mute" style="margin:6px 0;font-size:12px;min-height:34px">${esc(t.title)}</div>
-    <div class="mute" style="font-size:12px">${(t.tags || '').split(',').filter(x => x.trim()).length} tags · ${esc(t.taxonomy_name ? t.taxonomy_name.split(' › ').slice(-1)[0] : 'no category set')}</div>
+    <div class="mute" style="font-size:12px">${(t.tags || '').split(',').filter(x => x.trim()).length} tags · ${t.var_source === 'spools' ? esc(t.var_name || 'Colour') + ' from filament ·' : t.var_source === 'fixed' ? 'fixed ' + esc(t.var_name) + ' ·' : ''} ${esc(t.taxonomy_name ? t.taxonomy_name.split(' › ').slice(-1)[0] : 'no category set')}</div>
     <div class="bar" style="margin:12px 0 0"><button class="g" onclick="editTemplate(${t.id})">Edit</button><button class="g" onclick="dupTemplate(${t.id})">Duplicate</button><button class="g" onclick="delTemplate(${t.id})">✕</button></div></div>`).join('')}
   </div>`;
 }
 async function dupTemplate(id) { const t = TEMPLATES.find(x => x.id === id); await safe(async () => { await api('POST', '/api/templates', {...t, name: t.name + ' (copy)'}); templates(); }); }
 async function delTemplate(id) { if (confirm('Delete this template?')) await safe(async () => { await api('DELETE', `/api/templates/${id}`); templates(); }); }
 function editTemplate(id) {
-  const t = TEMPLATES.find(x => x.id === id) || {name: '', title: '{name} | ', description: '{name}\n\n', tags: '', materials: 'PLA', quantity: 5, taxonomy_id: null, taxonomy_name: ''};
+  const t = TEMPLATES.find(x => x.id === id) || {name: '', title: '{name} | ', description: '{name}\n\n', tags: '', materials: 'PLA', quantity: 5, taxonomy_id: null, taxonomy_name: '', var_name: 'Colour', var_source: 'spools', var_options: '', var_material: 'PLA', personalisation: ''};
   let tax = {id: t.taxonomy_id, name: t.taxonomy_name};
   const m = modal(`<h2>${id ? 'Edit' : 'New'} template</h2><div class="grid">
     <div class="full"><label>Template name</label><input id="t_name" value="${esc(t.name)}"></div>
@@ -401,6 +431,11 @@ function editTemplate(id) {
     <div class="full"><label>Tags (comma separated — Etsy allows 13, up to 20 characters each) <span id="t_gc" class="mute"></span></label><textarea id="t_tags" rows="3">${esc(t.tags)}</textarea></div>
     <div><label>Materials</label><input id="t_mat" value="${esc(t.materials)}"></div>
     <div><label>Stock quantity</label><input id="t_qty" type="number" min="1" value="${t.quantity || 5}"></div>
+    <div class="full"><label>Variation (e.g. Colour) — name shown to buyers</label><input id="t_vname" value="${esc(t.var_name || '')}" placeholder="Colour"></div>
+    <div><label>Variation options come from</label><select id="t_vsrc"><option value="none" ${t.var_source === 'none' || !t.var_source ? 'selected' : ''}>No variation</option><option value="spools" ${t.var_source === 'spools' ? 'selected' : ''}>My available filament (Bambuddy)</option><option value="fixed" ${t.var_source === 'fixed' ? 'selected' : ''}>A fixed list</option></select></div>
+    <div><label>Filament material to use</label><input id="t_vmat" value="${esc(t.var_material || 'PLA')}"></div>
+    <div class="full"><label>Fixed list of options (comma separated — only used for “A fixed list”)</label><input id="t_vopts" value="${esc(t.var_options || '')}"></div>
+    <div class="full"><label>Personalisation wording (Etsy’s API can’t switch personalisation on, so you’ll get a reminder to paste this when you finish the draft)</label><textarea id="t_pers" rows="2">${esc(t.personalisation || '')}</textarea></div>
     <div class="full"><label>Category</label><div id="t_taxcur" class="mute" style="margin-bottom:6px">${tax.id ? 'Selected: ' + esc(tax.name) : 'None selected — pick once and every product using this template gets it'}</div>
       <div style="display:flex;gap:6px"><input id="t_taxq" placeholder="e.g. tool holder, wall mount…" style="flex:1"><button class="g" id="t_taxgo">Search</button></div><div id="t_taxres"></div></div>
   </div>
@@ -421,7 +456,8 @@ function editTemplate(id) {
   $('#t_taxq', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); search(); } };
   $('#t_save', m).onclick = () => safe(async () => {
     const body = {name: $('#t_name', m).value, title: $('#t_title', m).value, description: $('#t_desc', m).value, tags: $('#t_tags', m).value,
-      materials: $('#t_mat', m).value, quantity: $('#t_qty', m).value, taxonomy_id: tax.id, taxonomy_name: tax.name};
+      materials: $('#t_mat', m).value, quantity: $('#t_qty', m).value, taxonomy_id: tax.id, taxonomy_name: tax.name,
+      var_name: $('#t_vname', m).value, var_source: $('#t_vsrc', m).value, var_options: $('#t_vopts', m).value, var_material: $('#t_vmat', m).value, personalisation: $('#t_pers', m).value};
     await api(id ? 'PUT' : 'POST', id ? `/api/templates/${id}` : '/api/templates', body);
     m.remove(); templates();
   });
@@ -546,6 +582,7 @@ async function settingsView() {
     <div class="full"><label>Bambuddy URL (e.g. http://192.168.1.10:8000)</label><input data-k="bambuddy_url" value="${esc(S.bambuddy_url)}"></div>
     <div class="full"><label>API key ${S.bambuddy_key_set ? '(saved — leave as is to keep)' : ''}</label><input data-k="bambuddy_key" type="password" value="${esc(S.bambuddy_key)}"></div>
     ${f('default_cost_per_kg', 'Fallback filament £/kg (if an archive has no cost)', 'number')}
+    ${f('colour_min_remaining_g', 'A filament colour counts as available above (grams left)', 'number')}
   </div>
   <p class="mute">In Bambuddy create an API key with the <b>Read Status</b> permission (Settings → API Keys).</p>
   <div class="bar"><button class="g" id="test">Test connection</button><span id="tres"></span></div>
