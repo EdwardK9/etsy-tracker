@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import re
 import sqlite3
 import urllib.error
 import urllib.parse
@@ -10,7 +11,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -1175,6 +1176,53 @@ def load_taxonomy():
     return flat
 
 
+SYN = {"holder": ["holder", "organizer", "organiser", "rack", "storage"], "mount": ["mount", "wall", "hanger", "bracket", "hook"],
+       "rack": ["rack", "storage", "organizer"], "dock": ["dock", "holder", "stand", "storage"], "stand": ["stand", "holder"],
+       "battery": ["battery", "storage", "organizer"], "tool": ["tool", "storage", "organizer"], "drill": ["tool", "storage"],
+       "wall": ["wall", "mount", "hanger"], "organiser": ["organizer", "storage"], "organizer": ["organizer", "storage"],
+       "charger": ["charger", "holder", "stand"], "bit": ["tool", "storage"], "workshop": ["tool", "storage"], "garage": ["storage", "tool"]}
+STOP = {"for", "the", "and", "with", "of", "a", "an", "to", "in", "on", "by", "your", "3d", "printed", "print", "custom", "personalised",
+        "personalized", "gift", "wall", "set", "pack", "size", "x", "pcs", "piece", "pieces", "fits", "compatible", "new"}
+
+
+def stem(w):
+    return w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w
+
+
+@app.route("/api/etsy/taxonomy-suggest")
+def api_taxonomy_suggest():
+    text = (request.args.get("q") or "").lower()
+    words = [stem(w) for w in re.findall(r"[a-z]+", text)]
+    words = [w for w in words if w not in STOP and len(w) > 1]
+    if not words:
+        return jsonify([])
+    try:
+        nodes = load_taxonomy()
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    weights = {}
+    for w in words:
+        weights[w] = max(weights.get(w, 0), 3.0)
+        for syn in SYN.get(w, []):
+            weights[stem(syn)] = max(weights.get(stem(syn), 0), 1.0)
+    scored = []
+    for n in nodes:
+        segs = [stem(x) for x in re.findall(r"[a-z]+", n["path"].lower())]
+        last = set(stem(x) for x in re.findall(r"[a-z]+", n["path"].lower().split(" › ")[-1]))
+        sc = 0.0
+        for w, wt in weights.items():
+            if w in last:
+                sc += wt * 2
+            elif w in segs:
+                sc += wt
+        if sc:
+            # prefer shorter, more specific-but-not-niche leaves; penalise clothing/jewellery/etc. noise slightly
+            sc -= len(segs) * 0.02
+            scored.append((sc, n))
+    scored.sort(key=lambda x: -x[0])
+    return jsonify([n for _, n in scored[:8]])
+
+
 @app.route("/api/etsy/taxonomy")
 def api_etsy_taxonomy():
     q = request.args.get("q", "").lower().split()
@@ -1415,10 +1463,36 @@ def api_bb_spools():
                     "cost_per_kg": round(cpk, 2), "value": round(remaining / 1000 * cpk, 2)})
     return jsonify(sorted(out, key=lambda x: (x["material"], x["colour"].lower())))
 
+BASIC_COLOURS = {"Black": (0, 0, 0), "White": (255, 255, 255), "Grey": (128, 128, 128), "Silver": (192, 192, 192),
+                 "Red": (220, 30, 30), "Dark Red": (130, 20, 20), "Orange": (255, 130, 20), "Yellow": (250, 230, 30),
+                 "Gold": (212, 175, 55), "Green": (30, 170, 60), "Dark Green": (20, 90, 40), "Lime": (180, 220, 40),
+                 "Teal": (0, 160, 160), "Cyan": (0, 170, 230), "Light Blue": (150, 190, 240), "Blue": (30, 70, 200),
+                 "Navy": (20, 30, 110), "Purple": (130, 60, 180), "Lilac": (190, 160, 220), "Pink": (240, 130, 180),
+                 "Magenta": (230, 0, 130), "Brown": (130, 75, 45), "Beige": (225, 205, 170), "Cream": (245, 235, 210)}
+
+
+def colour_name_from_rgba(rgba):
+    try:
+        r, g, b = (int(rgba[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, TypeError):
+        return ""
+    return min(BASIC_COLOURS, key=lambda n: sum((x - y) ** 2 for x, y in zip(BASIC_COLOURS[n], (r, g, b))))
+
+
+def material_ok(sp_material, wanted):
+    """wanted: comma list of families, '' or 'all' = everything. 'PLA' matches PLA, PLA Matte, PLA Silk…"""
+    fams = [w.strip().lower() for w in (wanted or "").split(",") if w.strip()]
+    if not fams or "all" in fams:
+        return True
+    m = (sp_material or "").strip().lower()
+    return any(m == f or m.split(" ")[0] == f for f in fams)
+
+
 @app.route("/api/bambuddy/colours")
 def api_bb_colours():
-    """Filament colours you currently have (non-archived spools with enough left), grouped by colour name."""
-    material = request.args.get("material", "").strip().lower()
+    """Filament colours you currently have (non-archived spools), grouped by colour name.
+    Spools without a colour name get one guessed from their hex colour."""
+    material = request.args.get("material", "")
     s = settings()
     try:
         spools = as_list(bb_get("/inventory/spools"))
@@ -1427,11 +1501,9 @@ def api_bb_colours():
     min_g = num(s.get("colour_min_remaining_g"), 50)
     out = {}
     for sp in spools:
-        if sp.get("archived_at"):
+        if sp.get("archived_at") or not material_ok(sp.get("material"), material):
             continue
-        if material and (sp.get("material") or "").strip().lower() != material:
-            continue
-        name = (sp.get("color_name") or "").strip()
+        name = (sp.get("color_name") or "").strip() or colour_name_from_rgba(sp.get("rgba") or "")
         if not name:
             continue
         remaining = max(num(sp.get("label_weight"), 1000) - num(sp.get("weight_used")), 0)
@@ -1440,6 +1512,15 @@ def api_bb_colours():
         c["spools"] += 1
     res = [dict(c, grams=round(c["grams"]), in_stock=c["grams"] >= min_g) for c in out.values()]
     return jsonify(sorted(res, key=lambda c: (-c["in_stock"], c["name"].lower())))
+
+
+@app.route("/api/bambuddy/materials")
+def api_bb_materials():
+    try:
+        spools = as_list(bb_get("/inventory/spools"))
+    except BBError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify(sorted({(sp.get("material") or "").split(" ")[0] for sp in spools if not sp.get("archived_at") and sp.get("material")}))
 
 
 # ---------------------------------------------------------------- order pipeline

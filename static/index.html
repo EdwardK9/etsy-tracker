@@ -344,12 +344,13 @@ async function editListing(id) {
     <div><label>Stock quantity</label><input id="l_qty" type="number" min="1" value="${p.l_qty || S.listing_quantity || 1}"></div>
     <div class="full"><label>Variation name (e.g. Colour — leave blank for none)</label><input id="l_vname" value="${esc(p.l_var_name || '')}" placeholder="Colour">
       <div id="l_vopts" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
+      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center"><span class="mute" style="font-size:12px">Load colours from:</span><select id="l_vmat" style="width:auto"><option value="all">All filament types</option></select></div>
       <div style="display:flex;gap:6px"><input id="l_vadd" placeholder="Add an option…" style="flex:1"><button class="g" id="l_vaddgo">Add</button><button class="g" id="l_vload">Load my filament colours</button></div>
       <div id="l_vnote" class="mute" style="margin-top:6px;font-size:12px"></div></div>
     <div class="full"><label>Personalisation wording (to paste on Etsy — the API can’t switch it on)</label><textarea id="l_pers" rows="2">${esc(p.l_personalisation || '')}</textarea></div>
     <div class="full"><label>Category (search Etsy’s categories)</label>
       <div id="l_taxcur" class="mute" style="margin-bottom:6px">${tax.id ? 'Selected: ' + esc(tax.name) : 'None selected'}</div>
-      <div style="display:flex;gap:6px"><input id="l_taxq" placeholder="e.g. tool holder, wall mount, battery…" style="flex:1"><button class="g" id="l_taxgo">Search</button></div><div id="l_taxres"></div></div>
+      <div style="display:flex;gap:6px"><input id="l_taxq" placeholder="e.g. tool holder, wall mount, battery…" style="flex:1"><button class="g" id="l_taxgo">Search</button><button class="g" id="l_taxsug">✨ Suggest from title</button></div><div id="l_taxres"></div></div>
     <div class="full"><label>Photos (first one is the main image; JPG/PNG/GIF, up to 10MB each)</label>
       <div id="l_imgs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"></div>
       <input type="file" id="l_file" accept=".jpg,.jpeg,.png,.gif" multiple></div>
@@ -377,7 +378,9 @@ async function editListing(id) {
     if (!vavail.length) toast('No matching spools found in Bambuddy.', true);
   });
   renderVar();
-  $('#l_vload', m).onclick = () => loadColours(S.listing_materials, true);
+  $('#l_vload', m).onclick = () => loadColours($('#l_vmat', m).value, true);
+  safe(async () => { const ms = await api('GET', '/api/bambuddy/materials'); const cur = (S.listing_materials || 'PLA').split(',')[0].trim().split(' ')[0].toUpperCase();
+    $('#l_vmat', m).innerHTML = `<option value="all">All filament types</option>` + ms.map(x => `<option value="${esc(x)}" ${x.toUpperCase() === cur ? 'selected' : ''}>${esc(x)} (incl. Matte/Silk etc.)</option>`).join(''); });
   $('#l_vaddgo', m).onclick = () => { const v = $('#l_vadd', m).value.trim(); if (v) { vsel.add(v); $('#l_vadd', m).value = ''; renderVar(); } };
   $('#l_vadd', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $('#l_vaddgo', m).click(); } };
   const tsel = $('#l_tplsel', m);
@@ -400,6 +403,17 @@ async function editListing(id) {
     $('#l_taxres', m).innerHTML = L.map((n, i) => `<div class="pick" data-i="${i}">${esc(n.path)}</div>`).join('') || '<div class="mute" style="margin-top:6px">No matches.</div>';
     m.querySelectorAll('#l_taxres .pick').forEach(el => el.onclick = () => { const n = L[+el.dataset.i]; tax = {id: n.id, name: n.path}; $('#l_taxcur', m).textContent = 'Selected: ' + n.path; $('#l_taxres', m).innerHTML = ''; });
   });
+  const showPicks = L => {
+    $('#l_taxres', m).innerHTML = L.map((n, i) => `<div class="pick" data-i="${i}">${esc(n.path)}</div>`).join('') || '<div class="mute" style="margin-top:6px">No matches.</div>';
+    m.querySelectorAll('#l_taxres .pick').forEach(el => el.onclick = () => { const n = L[+el.dataset.i]; tax = {id: n.id, name: n.path}; $('#l_taxcur', m).textContent = 'Selected: ' + n.path; $('#l_taxres', m).innerHTML = ''; });
+  };
+  const suggest = quiet => safe(async () => {
+    const L = await api('GET', '/api/etsy/taxonomy-suggest?q=' + encodeURIComponent(($('#l_title', m).value || '') + ' ' + p.name + ' ' + ($('#l_tags', m).value || '')));
+    if (L.error) return; showPicks(L);
+    if (!L.length && !quiet) toast('No suggestions — try the search box.', true);
+  });
+  $('#l_taxsug', m).onclick = () => suggest(false);
+  if (!tax.id && S.etsy_connected) suggest(true);
   $('#l_taxgo', m).onclick = search;
   $('#l_taxq', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); search(); } };
   const loadImgs = () => safe(async () => {
