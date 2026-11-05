@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.22.0"
+VERSION = "0.23.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -170,6 +170,22 @@ CREATE TABLE IF NOT EXISTS product_files (
   orig_name TEXT NOT NULL,
   size INTEGER DEFAULT 0,
   added_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS measure_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  category TEXT DEFAULT '',
+  product_id INTEGER,
+  notes TEXT DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS measure_values (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  value TEXT DEFAULT '',
+  unit TEXT DEFAULT 'mm',
+  rank INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS product_supplies (
   product_id INTEGER NOT NULL,
@@ -2115,6 +2131,47 @@ def api_file_delete(fid):
 def api_model_url(pid):
     db().execute("UPDATE products SET model_url=? WHERE id=?", ((request.get_json(force=True).get("url") or "").strip(), pid))
     db().commit()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------- measurements database
+def _save_measure(iid, d):
+    c = db()
+    vals = [v for v in (d.get("values") or []) if (v.get("label") or "").strip()]
+    if iid is None:
+        iid = c.execute("INSERT INTO measure_items(name,category,product_id,notes) VALUES(?,?,?,?)",
+                        ((d.get("name") or "Untitled").strip(), (d.get("category") or "").strip(),
+                         d.get("product_id") or None, d.get("notes") or "")).lastrowid
+    else:
+        c.execute("UPDATE measure_items SET name=?,category=?,product_id=?,notes=?,updated_at=datetime('now') WHERE id=?",
+                  ((d.get("name") or "Untitled").strip(), (d.get("category") or "").strip(),
+                   d.get("product_id") or None, d.get("notes") or "", iid))
+        c.execute("DELETE FROM measure_values WHERE item_id=?", (iid,))
+    for i, v in enumerate(vals):
+        c.execute("INSERT INTO measure_values(item_id,label,value,unit,rank) VALUES(?,?,?,?,?)",
+                  (iid, v["label"].strip(), str(v.get("value", "")).strip(), (v.get("unit") or "").strip(), i))
+    c.commit()
+    return iid
+
+
+@app.route("/api/measurements", methods=["GET", "POST"])
+def api_measurements():
+    if request.method == "POST":
+        return jsonify({"ok": True, "id": _save_measure(None, request.get_json(force=True))})
+    out = rows("SELECT * FROM measure_items ORDER BY category COLLATE NOCASE, name COLLATE NOCASE")
+    for m in out:
+        m["values"] = rows("SELECT label,value,unit FROM measure_values WHERE item_id=? ORDER BY rank,id", (m["id"],))
+    return jsonify(out)
+
+
+@app.route("/api/measurements/<int:iid>", methods=["PUT", "DELETE"])
+def api_measurement(iid):
+    if request.method == "DELETE":
+        db().execute("DELETE FROM measure_values WHERE item_id=?", (iid,))
+        db().execute("DELETE FROM measure_items WHERE id=?", (iid,))
+        db().commit()
+        return jsonify({"ok": True})
+    _save_measure(iid, request.get_json(force=True))
     return jsonify({"ok": True})
 
 
