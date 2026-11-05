@@ -10,7 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -159,6 +159,8 @@ PRODUCT_MIGRATIONS = [
     ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
     ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
     ("plate_energy", "REAL DEFAULT 0"), ("labour_minutes", "INTEGER DEFAULT 0"),
+    ("etsy_state", "TEXT DEFAULT ''"), ("etsy_views", "INTEGER DEFAULT 0"), ("etsy_favs", "INTEGER DEFAULT 0"),
+    ("etsy_qty", "INTEGER"), ("etsy_synced", "TEXT DEFAULT ''"),
     ("l_var_name", "TEXT DEFAULT ''"), ("l_var_options", "TEXT DEFAULT ''"), ("l_personalisation", "TEXT DEFAULT ''"),
 ]
 TEMPLATE_MIGRATIONS = [
@@ -1509,6 +1511,63 @@ def api_etsy_carriers():
     except EtsyError as e:
         return jsonify({"error": str(e)}), 502
     return jsonify(sorted({c["name"] for c in d.get("results", []) if c.get("name")}))
+
+
+# ---------------------------------------------------------------- listing sync
+@app.route("/api/etsy/listing-sync", methods=["POST"])
+def api_listing_sync():
+    """Pull state/views/favourites/quantity for every listing in the shop and attach them to linked products.
+    Unlinked listings whose title matches a product name are linked automatically."""
+    s = settings()
+    try:
+        found, offset = [], 0
+        for state in ("active", "draft", "inactive"):
+            offset = 0
+            while True:
+                d = etsy_get(f"/shops/{s['etsy_shop_id']}/listings", {"state": state, "limit": 100, "offset": offset})
+                res = d.get("results", [])
+                found += res
+                offset += 100
+                if len(res) < 100:
+                    break
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    prods = rows("SELECT id,name,etsy_listing_id FROM products")
+    by_id = {p["etsy_listing_id"]: p for p in prods if p["etsy_listing_id"]}
+    linked = updated = 0
+    for l in found:
+        p = by_id.get(l["listing_id"])
+        if not p:
+            t = (l.get("title") or "").strip().lower()
+            p = next((x for x in prods if not x["etsy_listing_id"] and x["name"].strip().lower() and x["name"].strip().lower() in t), None)
+            if p:
+                db().execute("UPDATE products SET etsy_listing_id=?, etsy_listing_url=? WHERE id=?",
+                             (l["listing_id"], l.get("url") or "", p["id"]))
+                p["etsy_listing_id"] = l["listing_id"]
+                linked += 1
+        if p:
+            db().execute("UPDATE products SET etsy_state=?, etsy_views=?, etsy_favs=?, etsy_qty=?, etsy_synced=? WHERE id=?",
+                         (l.get("state", ""), l.get("views") or 0, l.get("num_favorers") or 0, l.get("quantity"), today(), p["id"]))
+            updated += 1
+    db().commit()
+    return jsonify({"ok": True, "listings": len(found), "updated": updated, "linked": linked})
+
+
+@app.route("/api/products/<int:pid>/push-stock", methods=["POST"])
+def api_push_stock(pid):
+    """Set the Etsy listing quantity to our stock (simple listings only; variation listings are managed in inventory)."""
+    s = settings()
+    p = one("SELECT * FROM products WHERE id=?", (pid,))
+    if not p or not p["etsy_listing_id"]:
+        return jsonify({"error": "This product isn't linked to an Etsy listing."}), 400
+    qty = max(1, int(request.get_json(force=True).get("qty") or stock_of(pid)))
+    try:
+        etsy_send("PATCH", f"/shops/{s['etsy_shop_id']}/listings/{p['etsy_listing_id']}", form={"quantity": qty})
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    db().execute("UPDATE products SET etsy_qty=? WHERE id=?", (qty, pid))
+    db().commit()
+    return jsonify({"ok": True, "qty": qty})
 
 
 init_db()

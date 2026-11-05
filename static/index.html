@@ -311,17 +311,21 @@ async function history(id) {
 /* ---------------- Listings ---------------- */
 async function listings() {
   const ready = S.etsy_connected && S.etsy_can_list;
-  $('#main').innerHTML = `<div class="top"><h1>Listings</h1></div>
+  $('#main').innerHTML = `<div class="top"><h1>Listings</h1><span class="sp"></span>${S.etsy_connected ? '<button class="b alt" onclick="syncListings()">↻ Sync listing stats</button>' : ''}</div>
   <div class="note">Prepare a listing for each product here, then create it as a <b>draft</b> on Etsy. Nothing goes live — open the draft on Etsy, perfect it and publish it there.
   ${ready ? '' : '<br><b>Etsy isn’t ready for drafts yet</b> — connect (or re-authorise) it in <a href="#settings" style="color:var(--acc)">Settings</a> first.'}</div>
-  <div class="wrap"><table><tr><th>Product</th><th>Category</th><th class="r">Price</th><th class="r">Photos</th><th>Status</th><th></th></tr>
+  <div class="wrap"><table><tr><th>Product</th><th>Category</th><th class="r">Price</th><th class="r">Photos</th><th>Status</th><th class="r">Views</th><th class="r">Favs</th><th class="r">Etsy qty / stock</th><th></th></tr>
   ${PRODUCTS.filter(p => p.active).map(p => `<tr><td>${esc(p.name)}</td><td class="mute">${esc((p.taxonomy_name || '').split(' › ').slice(-2).join(' › ')) || '—'}</td>
     <td class="r">${money(p.price)}</td><td class="r">${p.n_images}</td>
-    <td>${p.etsy_listing_id ? '<span class="pill">Draft on Etsy</span>' : '<span class="mute">Not created</span>'}</td>
-    <td>${p.etsy_listing_id ? `<a class="g" style="text-decoration:none;display:inline-block;padding:5px 10px;border-radius:8px;border:1px solid var(--line);color:var(--text)" href="${esc(p.etsy_listing_url)}" target="_blank">Open on Etsy ↗</a>` : `<button class="g" onclick="editListing(${p.id})">Edit / create draft</button>`}</td></tr>`).join('') || '<tr><td colspan=6 class="mute">Add a product first.</td></tr>'}
+    <td>${p.etsy_listing_id ? `<span class="pill">${p.etsy_state ? esc(p.etsy_state) : 'Draft on Etsy'}</span>` : '<span class="mute">Not created</span>'}</td>
+    <td class="r">${p.etsy_listing_id && p.etsy_synced ? p.etsy_views : '—'}</td><td class="r">${p.etsy_listing_id && p.etsy_synced ? p.etsy_favs : '—'}</td>
+    <td class="r">${p.etsy_listing_id && p.etsy_synced ? `${p.etsy_qty ?? '—'} / ${p.stock} ${S.etsy_can_list && p.stock > 0 && p.etsy_qty !== p.stock ? `<button class="g" title="Set Etsy quantity to your stock" onclick="pushStock(${p.id})">push</button>` : ''}` : '—'}</td>
+    <td>${p.etsy_listing_id ? `<a class="g" style="text-decoration:none;display:inline-block;padding:5px 10px;border-radius:8px;border:1px solid var(--line);color:var(--text)" href="${esc(p.etsy_listing_url)}" target="_blank">Open on Etsy ↗</a>` : `<button class="g" onclick="editListing(${p.id})">Edit / create draft</button>`}</td></tr>`).join('') || '<tr><td colspan=9 class="mute">Add a product first.</td></tr>'}
   </table></div>`;
 }
 
+async function syncListings() { await safe(async () => { toast('Syncing listings…'); const r = await api('POST', '/api/etsy/listing-sync', {}); toast(`${r.listings} listings checked, ${r.updated} products updated${r.linked ? `, ${r.linked} newly linked` : ''}`); route(); }); }
+async function pushStock(id) { await safe(async () => { const r = await api('POST', `/api/products/${id}/push-stock`, {}); toast(`Etsy quantity set to ${r.qty}`); route(); }); }
 async function editListing(id) {
   const p = PRODUCTS.find(x => x.id === id);
   const TPL = await api('GET', '/api/templates');
@@ -579,7 +583,7 @@ async function stock() {
   <h2>Current stock</h2>
   <div class="wrap"><table><tr><th>Product</th><th class="r">Printed (good)</th><th class="r">Failed</th><th class="r">Sold</th><th class="r">In stock</th><th class="r">Value at cost</th></tr>
   ${PRODUCTS.filter(p => p.active || p.made || p.sold).map(p => `<tr><td>${esc(p.name)}</td><td class="r">${p.made}</td><td class="r">${p.failed}</td><td class="r">${p.sold}</td>
-    <td class="r ${p.stock < 0 ? 'bad' : ''}"><b>${p.stock}</b></td><td class="r">${money(Math.max(p.stock, 0) * p.unit_cost)}</td></tr>`).join('') || '<tr><td colspan=6 class="mute">Add a product first.</td></tr>'}
+    <td class="r ${p.stock < 0 ? 'bad' : ''}"><b>${p.stock}</b></td><td class="r">${money(Math.max(p.stock, 0) * p.unit_cost)}</td></tr>`).join('') || '<tr><td colspan=9 class="mute">Add a product first.</td></tr>'}
   </table></div>
   <h2>Print log</h2>
   <div class="wrap"><table><tr><th>Date</th><th>Product</th><th class="r">Good</th><th class="r">Failed</th><th class="r">Unit cost</th><th class="r">Total cost</th><th>Notes</th><th></th></tr>
