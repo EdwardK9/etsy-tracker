@@ -59,6 +59,7 @@ label{display:block;font-size:12px;color:var(--mute);margin-bottom:5px;font-weig
 .modal{position:fixed;inset:0;background:var(--over);backdrop-filter:blur(6px);display:flex;align-items:flex-start;justify-content:center;padding:40px 12px;overflow:auto;z-index:20}
 .modal>div{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;width:100%;max-width:580px;box-shadow:0 30px 80px #000a;animation:pop .15s ease-out}
 @keyframes pop{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+.modal h2{font-size:18px;text-transform:none;color:var(--text);letter-spacing:-.2px;margin:0 0 14px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .grid .full{grid-column:1/-1}
 .pill{font-size:11px;padding:3px 9px;border-radius:20px;background:#34d3991a;color:var(--good);font-weight:600}
@@ -89,6 +90,7 @@ const ICONS = {
   expenses:'<rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20M6 15h4"/>',
   import:'<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v3h16v-3"/>',
   settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>',
+  listings:'<path d="M20 12l-8 8-9-9V3h8l9 9z"/><circle cx="7.5" cy="7.5" r="1.2"/>',
   money:'<path d="M12 2v20M17 6H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',
   tag:'<path d="M20 12l-8 8-9-9V3h8l9 9z"/><circle cx="7.5" cy="7.5" r="1.2"/>',
   truck:'<path d="M1 6h13v11H1zM14 10h5l3 3v4h-8"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
@@ -118,7 +120,7 @@ function toast(msg, bad) {
 }
 async function safe(fn) { try { await fn(); } catch (e) { toast(e.message, true); } }
 
-const TABS = [['dashboard','Dashboard'],['products','Products'],['stock','Printing & Stock'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
+const TABS = [['dashboard','Dashboard'],['products','Products'],['listings','Listings'],['stock','Printing & Stock'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
 const TITLES = Object.fromEntries(TABS);
 const SUN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4l1.4-1.4"/></svg>';
 const MOON = '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>';
@@ -283,6 +285,85 @@ async function history(id) {
   ${h.slice().reverse().map(x => `<tr><td>${x.changed_at.slice(0, 16)}</td><td>${x.kind === 'price' ? 'Price' : 'Unit cost'}</td><td class="r">${money(x.value)}</td></tr>`).join('')}</table></div>`);
 }
 
+
+/* ---------------- Listings ---------------- */
+async function listings() {
+  const ready = S.etsy_connected && S.etsy_can_list;
+  $('#main').innerHTML = `<div class="top"><h1>Listings</h1></div>
+  <div class="note">Prepare a listing for each product here, then create it as a <b>draft</b> on Etsy. Nothing goes live — open the draft on Etsy, perfect it and publish it there.
+  ${ready ? '' : '<br><b>Etsy isn’t ready for drafts yet</b> — connect (or re-authorise) it in <a href="#settings" style="color:var(--acc)">Settings</a> first.'}</div>
+  <div class="wrap"><table><tr><th>Product</th><th>Category</th><th class="r">Price</th><th class="r">Photos</th><th>Status</th><th></th></tr>
+  ${PRODUCTS.filter(p => p.active).map(p => `<tr><td>${esc(p.name)}</td><td class="mute">${esc((p.taxonomy_name || '').split(' › ').slice(-2).join(' › ')) || '—'}</td>
+    <td class="r">${money(p.price)}</td><td class="r">${p.n_images}</td>
+    <td>${p.etsy_listing_id ? '<span class="pill">Draft on Etsy</span>' : '<span class="mute">Not created</span>'}</td>
+    <td>${p.etsy_listing_id ? `<a class="g" style="text-decoration:none;display:inline-block;padding:5px 10px;border-radius:8px;border:1px solid var(--line);color:var(--text)" href="${esc(p.etsy_listing_url)}" target="_blank">Open on Etsy ↗</a>` : `<button class="g" onclick="editListing(${p.id})">Edit / create draft</button>`}</td></tr>`).join('') || '<tr><td colspan=6 class="mute">Add a product first.</td></tr>'}
+  </table></div>`;
+}
+
+async function editListing(id) {
+  const p = PRODUCTS.find(x => x.id === id);
+  const defTpl = (S.listing_desc_template || '{name}').replace(/\{name\}/g, p.name);
+  const others = PRODUCTS.filter(x => x.id !== id && (x.l_title || x.l_desc || x.taxonomy_id));
+  let tax = {id: p.taxonomy_id, name: p.taxonomy_name};
+  const m = modal(`<h2 style="margin-top:0">Listing — ${esc(p.name)}</h2>
+  <div class="grid">
+    ${others.length ? `<div class="full"><label>Copy details from another product (title, description, tags, category…)</label><select id="l_copy"><option value="">—</option>${others.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></div>` : ''}
+    <div class="full"><label>Title <span id="l_tc" class="mute"></span></label><input id="l_title" maxlength="140" value="${esc(p.l_title || p.name)}"></div>
+    <div class="full"><label>Description <button class="g" id="l_tpl" style="margin-left:6px">Use template</button></label><textarea id="l_desc" rows="7">${esc(p.l_desc || defTpl)}</textarea></div>
+    <div class="full"><label>Tags (comma separated, up to 13, 20 characters each) <span id="l_gc" class="mute"></span></label><input id="l_tags" value="${esc(p.l_tags)}"></div>
+    <div><label>Materials</label><input id="l_mat" value="${esc(p.l_materials || S.listing_materials)}"></div>
+    <div><label>Stock quantity</label><input id="l_qty" type="number" min="1" value="${p.l_qty || S.listing_quantity || 1}"></div>
+    <div class="full"><label>Category (search Etsy’s categories)</label>
+      <div id="l_taxcur" class="mute" style="margin-bottom:6px">${tax.id ? 'Selected: ' + esc(tax.name) : 'None selected'}</div>
+      <div style="display:flex;gap:6px"><input id="l_taxq" placeholder="e.g. tool holder, wall mount, battery…" style="flex:1"><button class="g" id="l_taxgo">Search</button></div><div id="l_taxres"></div></div>
+    <div class="full"><label>Photos (first one is the main image; JPG/PNG/GIF, up to 10MB each)</label>
+      <div id="l_imgs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"></div>
+      <input type="file" id="l_file" accept=".jpg,.jpeg,.png,.gif" multiple></div>
+  </div>
+  <p class="mute" style="margin:12px 0 0">Price (${money(p.price)}) and item weight come from the product. Shipping, processing time and who-made come from your Settings defaults.</p>
+  <div class="bar" style="margin:14px 0 0"><button class="b" id="l_draft">Save &amp; create Etsy draft</button><button class="b alt" id="l_save">Save only</button><button class="g" onclick="this.closest('.modal').remove()">Close</button></div>
+  <div id="l_msg" style="margin-top:10px"></div>`);
+  const counters = () => { $('#l_tc', m).textContent = `${$('#l_title', m).value.length}/140`; $('#l_gc', m).textContent = `${(($('#l_tags', m).value + ',' + (S.listing_default_tags || '')).split(',').map(x => x.trim()).filter(Boolean).length)}/13 incl. defaults`; };
+  m.addEventListener('input', counters); counters();
+  $('#l_tpl', m).onclick = () => { $('#l_desc', m).value = defTpl; };
+  const copy = $('#l_copy', m);
+  if (copy) copy.onchange = () => { const o = PRODUCTS.find(x => x.id == copy.value); if (!o) return;
+    $('#l_title', m).value = o.l_title || o.name; $('#l_desc', m).value = (o.l_desc || '').split(o.name).join(p.name); $('#l_tags', m).value = o.l_tags || ''; $('#l_mat', m).value = o.l_materials || '';
+    tax = {id: o.taxonomy_id, name: o.taxonomy_name}; $('#l_taxcur', m).textContent = tax.id ? 'Selected: ' + tax.name : 'None selected'; counters(); };
+  const search = () => safe(async () => {
+    const L = await api('GET', '/api/etsy/taxonomy?q=' + encodeURIComponent($('#l_taxq', m).value));
+    $('#l_taxres', m).innerHTML = L.map((n, i) => `<div class="pick" data-i="${i}">${esc(n.path)}</div>`).join('') || '<div class="mute" style="margin-top:6px">No matches.</div>';
+    m.querySelectorAll('#l_taxres .pick').forEach(el => el.onclick = () => { const n = L[+el.dataset.i]; tax = {id: n.id, name: n.path}; $('#l_taxcur', m).textContent = 'Selected: ' + n.path; $('#l_taxres', m).innerHTML = ''; });
+  });
+  $('#l_taxgo', m).onclick = search;
+  $('#l_taxq', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); search(); } };
+  const loadImgs = () => safe(async () => {
+    const L = await api('GET', `/api/products/${id}/images`);
+    $('#l_imgs', m).innerHTML = L.map((im, i) => `<div style="position:relative;width:84px"><img src="/api/images/${im.id}/file" style="width:84px;height:84px;object-fit:cover;border-radius:10px;border:1px solid var(--line)">
+      <button class="g" style="position:absolute;top:3px;right:3px;padding:1px 6px" data-del="${im.id}">✕</button>
+      ${i ? `<button class="g" style="width:100%;margin-top:3px;padding:2px" data-first="${im.id}">Make main</button>` : '<div class="pill" style="text-align:center;margin-top:3px">Main</div>'}</div>`).join('');
+    m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => safe(async () => { await api('DELETE', `/api/images/${b.dataset.del}`); loadImgs(); }));
+    m.querySelectorAll('[data-first]').forEach(b => b.onclick = () => safe(async () => { await api('POST', `/api/images/${b.dataset.first}/first`); loadImgs(); }));
+  });
+  loadImgs();
+  $('#l_file', m).onchange = e => safe(async () => {
+    const fd = new FormData(); [...e.target.files].forEach(f => fd.append('files', f));
+    const r = await fetch(`/api/products/${id}/images`, {method: 'POST', body: fd}); const j = await r.json();
+    if (!r.ok) throw new Error(j.error); e.target.value = ''; loadImgs();
+  });
+  const save = () => api('PUT', `/api/products/${id}/listing`, {l_title: $('#l_title', m).value, l_desc: $('#l_desc', m).value, l_tags: $('#l_tags', m).value,
+    l_materials: $('#l_mat', m).value, l_qty: $('#l_qty', m).value, taxonomy_id: tax.id, taxonomy_name: tax.name});
+  $('#l_save', m).onclick = () => safe(async () => { await save(); toast('Saved'); route(); });
+  $('#l_draft', m).onclick = () => safe(async () => {
+    await save(); $('#l_msg', m).innerHTML = '<span class="mute">Creating draft on Etsy…</span>';
+    try {
+      const r = await api('POST', `/api/products/${id}/etsy-draft`);
+      $('#l_msg', m).innerHTML = `<div class="note"><b class="good">Draft created.</b> <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">Open it on Etsy ↗</a> to finish and publish.${r.warnings.length ? '<br><span class="bad">Photo problems: ' + r.warnings.map(esc).join('; ') + '</span>' : ''}</div>`;
+      route();
+    } catch (e) { $('#l_msg', m).innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  });
+}
+
 /* ---------------- Printing & Stock ---------------- */
 async function stock() {
   const B = await api('GET', '/api/batches');
@@ -407,18 +488,28 @@ async function settingsView() {
   <div class="bar"><button class="g" id="test">Test connection</button><span id="tres"></span></div>
   <h2>Etsy connection</h2>
   <div class="grid" style="max-width:700px">
-    <div><label>API keystring ${S.etsy_keystring ? '' : ''}</label><input data-k="etsy_keystring" value="${esc(S.etsy_keystring)}"></div>
+    <div><label>API keystring</label><input data-k="etsy_keystring" value="${esc(S.etsy_keystring)}"></div>
     <div><label>Shared secret ${S.etsy_secret_set ? '(saved — leave blank to keep)' : ''}</label><input data-k="etsy_secret" type="password" value=""></div>
     <div class="full"><label>Redirect URL (must be https and registered on your Etsy app exactly)</label><input data-k="etsy_redirect_uri" placeholder="https://example.com/etsy/callback" value="${esc(S.etsy_redirect_uri)}"></div>
   </div>
   ${S.etsy_connected ? `<div class="bar" style="margin-top:12px"><span class="pill">Connected · ${esc(S.etsy_shop_name || 'shop')}</span>
-      <button class="b" id="esync">Sync orders now</button><button class="g" id="efull">Full re-sync</button><button class="g" id="esample">Show sample data</button><button class="g" id="edisc">Disconnect</button></div>
-    <div id="eres" class="mute"></div>` : `<div class="note" style="margin-top:12px;max-width:700px">
-      <b>Connect:</b> save the details above, click <b>Open Etsy login</b> and approve access. Etsy then sends you to your redirect URL — that page may show an error, which is fine.
+      <button class="b" id="esync">Sync orders now</button><button class="g" id="efull">Full re-sync</button><button class="g" id="esample">Show sample data</button><button class="g" id="edisc">Disconnect</button></div>` : ''}
+  <div id="eres" class="mute"></div>
+  ${(!S.etsy_connected || !S.etsy_can_list) ? `<div class="note" style="margin-top:12px;max-width:700px">
+      ${S.etsy_connected ? '<b>Re-authorise needed</b> to let the app create listing drafts (a one-off). ' : '<b>Connect:</b> '}Save the details above, click <b>Open Etsy login</b> and approve access. Etsy then sends you to your redirect URL — that page may show an error, which is fine.
       Copy the <b>full address from the browser bar</b> and paste it below.
       <div class="bar" style="margin:10px 0 0"><button class="b alt" id="eopen">Open Etsy login</button></div>
-      <div style="display:flex;gap:6px;margin-top:8px"><input id="epaste" placeholder="https://…?code=…&state=…" style="flex:1"><button class="b" id="econn">Connect</button></div>
-      <div id="eres" class="mute" style="margin-top:6px"></div></div>`}
+      <div style="display:flex;gap:6px;margin-top:8px"><input id="epaste" placeholder="https://…?code=…&state=…" style="flex:1"><button class="b" id="econn">Connect</button></div></div>` : ''}
+  <h2>Listing defaults (used when creating Etsy drafts)</h2>
+  <div class="grid" style="max-width:700px">
+    <div><label>Shipping profile</label><select data-k="listing_shipping_profile_id" id="l_ship"><option value="${esc(S.listing_shipping_profile_id)}">${S.listing_shipping_profile_id ? 'Saved (' + esc(S.listing_shipping_profile_id) + ')' : (S.etsy_connected ? 'Loading…' : 'Connect Etsy first')}</option></select></div>
+    <div><label>Processing time profile</label><select data-k="listing_readiness_state_id" id="l_proc"><option value="${esc(S.listing_readiness_state_id)}">${S.listing_readiness_state_id ? 'Saved (' + esc(S.listing_readiness_state_id) + ')' : (S.etsy_connected ? 'Loading…' : 'Connect Etsy first')}</option></select></div>
+    <div><label>Who made it</label><select data-k="listing_who_made">${[['i_did','I did'],['collective','A member of my shop'],['someone_else','Another company or person']].map(([v, l]) => `<option value="${v}" ${S.listing_who_made === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div><label>When made</label><select data-k="listing_when_made">${[['made_to_order','Made to order'],['2020_2026','2020–2026']].map(([v, l]) => `<option value="${v}" ${S.listing_when_made === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    ${f('listing_quantity', 'Default stock quantity on new drafts', 'number')}${f('listing_materials', 'Default materials (comma separated)')}
+    <div class="full"><label>Tags added to every listing (comma separated, max 13 total, 20 chars each)</label><input data-k="listing_default_tags" value="${esc(S.listing_default_tags)}"></div>
+    <div class="full"><label>Description template — {name} becomes the product name</label><textarea data-k="listing_desc_template" rows="4">${esc(S.listing_desc_template)}</textarea></div>
+  </div>
   <h2>Etsy fee rates (used when a sale's fees are left blank)</h2>
   <div class="grid" style="max-width:700px">
     ${f('currency', 'Currency symbol')}${f('fee_transaction_pct', 'Transaction fee %', 'number')}
@@ -431,6 +522,8 @@ async function settingsView() {
   const collect = () => Object.fromEntries([...document.querySelectorAll('[data-k]')].map(e => [e.dataset.k, e.value]));
   $('#save').onclick = () => safe(async () => { await api('PUT', '/api/settings', collect()); toast('Saved'); route(); });
   const eres = t => { const e = $('#eres'); if (e) e.innerHTML = t; };
+  const fillSel = async (id, url, cur) => { try { const L = await api('GET', url); const el = $(id); el.innerHTML = '<option value="">— none —</option>' + L.map(x => `<option value="${x.id}" ${String(x.id) === String(cur) ? 'selected' : ''}>${esc(x.title)}</option>`).join(''); } catch (e) { $(id).options[0].textContent = 'Could not load: ' + e.message.slice(0, 60); } };
+  if (S.etsy_connected) { fillSel('#l_ship', '/api/etsy/shipping-profiles', S.listing_shipping_profile_id); fillSel('#l_proc', '/api/etsy/processing-profiles', S.listing_readiness_state_id); }
   const syncRun = (full) => safe(async () => {
     eres('Syncing…');
     try { const r = await api('POST', '/api/etsy/sync', {full}); eres(`<span class="good">Imported ${r.added} sale lines</span> · ${r.skipped_duplicates} already had · ${r.products_created} new products${r.receipts_with_refunds ? ' · ' + r.receipts_with_refunds + ' orders have refunds (check them)' : ''}`); }
@@ -456,7 +549,7 @@ async function settingsView() {
   });
 }
 
-const VIEWS = {dashboard, products, stock, sales, expenses, import: importView, settings: settingsView};
+const VIEWS = {dashboard, products, listings, stock, sales, expenses, import: importView, settings: settingsView};
 route();
 </script>
 </body>

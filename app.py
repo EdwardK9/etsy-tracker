@@ -10,7 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -41,10 +41,19 @@ DEFAULT_SETTINGS = {
     "etsy_oauth_state": "",
     "etsy_oauth_verifier": "",
     "etsy_last_sync": "",
+    "etsy_scopes": "",
+    "listing_shipping_profile_id": "",
+    "listing_readiness_state_id": "",
+    "listing_who_made": "i_did",
+    "listing_when_made": "made_to_order",
+    "listing_quantity": "5",
+    "listing_default_tags": "",
+    "listing_materials": "PLA",
+    "listing_desc_template": "{name}\n\n[Describe what it fits, size, colour options and anything the buyer should check before ordering.]",
 }
 SECRET_KEYS = ("bambuddy_key", "etsy_secret", "etsy_access_token", "etsy_refresh_token", "etsy_oauth_verifier", "etsy_oauth_state")
 INTERNAL_KEYS = ("etsy_access_token", "etsy_refresh_token", "etsy_token_expires", "etsy_user_id", "etsy_shop_id",
-                 "etsy_shop_name", "etsy_oauth_state", "etsy_oauth_verifier", "etsy_last_sync")
+                 "etsy_shop_name", "etsy_oauth_state", "etsy_oauth_verifier", "etsy_last_sync", "etsy_scopes")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
@@ -97,6 +106,12 @@ CREATE TABLE IF NOT EXISTS sales (
   source TEXT DEFAULT 'manual',
   notes TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS product_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL,
+  filename TEXT NOT NULL,
+  rank INTEGER DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS expenses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date TEXT NOT NULL,
@@ -121,9 +136,22 @@ def close_db(_):
         d.close()
 
 
+PRODUCT_MIGRATIONS = [
+    ("l_title", "TEXT DEFAULT ''"), ("l_desc", "TEXT DEFAULT ''"), ("l_tags", "TEXT DEFAULT ''"),
+    ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
+    ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
+]
+IMG_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "images")
+os.makedirs(IMG_DIR, exist_ok=True)
+
+
 def init_db():
     con = sqlite3.connect(DB_PATH)
     con.executescript(SCHEMA)
+    have = {r[1] for r in con.execute("PRAGMA table_info(products)")}
+    for col, decl in PRODUCT_MIGRATIONS:
+        if col not in have:
+            con.execute(f"ALTER TABLE products ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
         con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
     con.commit()
@@ -194,6 +222,7 @@ def api_settings():
         s[k + "_set"] = bool(s.get(k))
         s[k] = ""  # never send secrets back to the browser
     s["etsy_connected"] = bool(s.get("etsy_refresh_token_set") and s.get("etsy_shop_id"))
+    s["etsy_can_list"] = "listings_w" in (s.get("etsy_scopes") or "")
     return jsonify(s)
 
 
@@ -212,7 +241,8 @@ def product_rows():
       SELECT p.*,
         COALESCE((SELECT SUM(qty_good) FROM batches b WHERE b.product_id=p.id),0) AS made,
         COALESCE((SELECT SUM(qty_failed) FROM batches b WHERE b.product_id=p.id),0) AS failed,
-        COALESCE((SELECT SUM(qty) FROM sales s WHERE s.product_id=p.id),0) AS sold
+        COALESCE((SELECT SUM(qty) FROM sales s WHERE s.product_id=p.id),0) AS sold,
+        (SELECT COUNT(*) FROM product_images i WHERE i.product_id=p.id) AS n_images
       FROM products p ORDER BY p.active DESC, p.name COLLATE NOCASE""")
     for p in ps:
         p["stock"] = p["made"] - p["sold"]
@@ -670,7 +700,7 @@ import time
 
 ETSY_API = "https://api.etsy.com/v3/application"
 ETSY_TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token"
-ETSY_SCOPES = "transactions_r shops_r"
+ETSY_SCOPES = "transactions_r shops_r listings_r listings_w"
 
 
 class EtsyError(Exception):
@@ -755,6 +785,7 @@ def api_etsy_connect():
         shop = etsy_get(f"/users/{uid}/shops")
         if "results" in shop and shop["results"]:
             shop = shop["results"][0]
+        set_setting("etsy_scopes", ETSY_SCOPES)
         set_setting("etsy_shop_id", shop["shop_id"])
         set_setting("etsy_shop_name", shop.get("shop_name", ""))
         db().commit()
@@ -865,6 +896,263 @@ def api_etsy_sample():
     except EtsyError as e:
         rec = {"error": str(e)}
     return jsonify({"ledger": ledger, "receipt": rec})
+
+
+# ---------------------------------------------------------------- listings (Etsy drafts)
+import mimetypes
+import re
+import uuid
+
+TAX_CACHE = {"nodes": None}
+ALLOWED_IMG = {".jpg", ".jpeg", ".png", ".gif"}
+
+
+def etsy_auth_headers():
+    """Valid headers with a fresh access token (refreshes if needed)."""
+    s = settings()
+    if not (s.get("etsy_keystring") and s.get("etsy_secret")):
+        raise EtsyError("Enter your Etsy keystring and shared secret in Settings first.")
+    if not s.get("etsy_refresh_token"):
+        raise EtsyError("Etsy isn't connected yet.")
+    if int(num(s.get("etsy_token_expires"))) < time.time() + 120:
+        etsy_token_request({"grant_type": "refresh_token", "client_id": s["etsy_keystring"], "refresh_token": s["etsy_refresh_token"]})
+        s = settings()
+    return s, etsy_headers(s, s["etsy_access_token"])
+
+
+def etsy_send(method, path, form=None, files=None, fields=None):
+    s, h = etsy_auth_headers()
+    url = ETSY_API + path
+    if files:
+        boundary = "----etsytracker" + uuid.uuid4().hex
+        parts = []
+        for k, v in (fields or {}).items():
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+        for k, (fname, content, ctype) in files.items():
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"; filename="{fname}"\r\nContent-Type: {ctype}\r\n\r\n'.encode() + content + b"\r\n")
+        parts.append(f"--{boundary}--\r\n".encode())
+        data = b"".join(parts)
+        h["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    else:
+        data = urllib.parse.urlencode(form).encode() if form is not None else None
+        if data is not None:
+            h["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(url, data=data, headers=h, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:600]
+        hint = " (Etsy didn't allow this. If it mentions scope, go to Settings and re-authorise Etsy.)" if e.code in (401, 403) else ""
+        raise EtsyError(f"Etsy returned HTTP {e.code}: {body}{hint}")
+    except Exception as e:
+        raise EtsyError(f"Could not reach Etsy: {e}")
+
+
+@app.route("/api/etsy/shipping-profiles")
+def api_etsy_shipping():
+    shop = settings().get("etsy_shop_id")
+    try:
+        d = etsy_get(f"/shops/{shop}/shipping-profiles")
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify([{"id": r["shipping_profile_id"], "title": r.get("title", "")} for r in d.get("results", [])])
+
+
+@app.route("/api/etsy/processing-profiles")
+def api_etsy_processing():
+    shop = settings().get("etsy_shop_id")
+    try:
+        d = etsy_get(f"/shops/{shop}/readiness-state-definitions", {"limit": 100})
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    out = []
+    for r in d.get("results", []):
+        label = r.get("processing_days_display_label") or f"{r.get('min_processing_days')}-{r.get('max_processing_days')} days"
+        out.append({"id": r["readiness_state_id"], "title": f"{(r.get('readiness_state') or '').replace('_', ' ')} · {label}"})
+    return jsonify(out)
+
+
+def load_taxonomy():
+    if TAX_CACHE["nodes"] is not None:
+        return TAX_CACHE["nodes"]
+    path = os.path.join(os.path.dirname(DB_PATH) or ".", "taxonomy.json")
+    if os.path.exists(path):
+        TAX_CACHE["nodes"] = json.load(open(path))
+        return TAX_CACHE["nodes"]
+    s = settings()
+    if not s.get("etsy_keystring"):
+        raise EtsyError("Enter your Etsy keystring first.")
+    tree = http_json(ETSY_API + "/seller-taxonomy/nodes", headers=etsy_headers(s))
+    flat = []
+
+    def walk(node, trail):
+        t = trail + [node["name"]]
+        if node.get("children"):
+            for c in node["children"]:
+                walk(c, t)
+        else:
+            flat.append({"id": node["id"], "path": " › ".join(t)})
+
+    for n in tree.get("results", []):
+        walk(n, [])
+    json.dump(flat, open(path, "w"))
+    TAX_CACHE["nodes"] = flat
+    return flat
+
+
+@app.route("/api/etsy/taxonomy")
+def api_etsy_taxonomy():
+    q = request.args.get("q", "").lower().split()
+    if not q:
+        return jsonify([])
+    try:
+        nodes = load_taxonomy()
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    hits = [n for n in nodes if all(w in n["path"].lower() for w in q)]
+    hits.sort(key=lambda n: len(n["path"]))
+    return jsonify(hits[:25])
+
+
+@app.route("/api/products/<int:pid>/listing", methods=["PUT"])
+def api_listing_save(pid):
+    d = request.get_json(force=True)
+    p = one("SELECT * FROM products WHERE id=?", (pid,))
+    if not p:
+        return jsonify({"error": "not found"}), 404
+    db().execute("""UPDATE products SET l_title=?,l_desc=?,l_tags=?,l_materials=?,l_qty=?,taxonomy_id=?,taxonomy_name=? WHERE id=?""",
+                 (d.get("l_title", "")[:140], d.get("l_desc", ""), d.get("l_tags", ""), d.get("l_materials", ""),
+                  int(num(d.get("l_qty"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", ""), pid))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+# --- images
+@app.route("/api/products/<int:pid>/images", methods=["GET", "POST"])
+def api_images(pid):
+    if request.method == "POST":
+        n = one("SELECT COALESCE(MAX(rank),0) AS m FROM product_images WHERE product_id=?", (pid,))["m"]
+        for f in request.files.getlist("files"):
+            ext = os.path.splitext(f.filename or "")[1].lower()
+            if ext not in ALLOWED_IMG:
+                return jsonify({"error": f"{f.filename}: only JPG, PNG or GIF images are accepted."}), 400
+            data = f.read()
+            if len(data) > 10 * 1024 * 1024:
+                return jsonify({"error": f"{f.filename} is over Etsy's 10MB limit."}), 400
+            name = uuid.uuid4().hex + ext
+            open(os.path.join(IMG_DIR, name), "wb").write(data)
+            n += 1
+            db().execute("INSERT INTO product_images(product_id,filename,rank) VALUES(?,?,?)", (pid, name, n))
+        db().commit()
+    return jsonify(rows("SELECT id,rank FROM product_images WHERE product_id=? ORDER BY rank,id", (pid,)))
+
+
+@app.route("/api/images/<int:iid>/file")
+def api_image_file(iid):
+    r = one("SELECT filename FROM product_images WHERE id=?", (iid,))
+    if not r:
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(IMG_DIR, r["filename"])
+
+
+@app.route("/api/images/<int:iid>", methods=["DELETE"])
+def api_image_delete(iid):
+    r = one("SELECT filename FROM product_images WHERE id=?", (iid,))
+    if r:
+        try:
+            os.remove(os.path.join(IMG_DIR, r["filename"]))
+        except OSError:
+            pass
+        db().execute("DELETE FROM product_images WHERE id=?", (iid,))
+        db().commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/images/<int:iid>/first", methods=["POST"])
+def api_image_first(iid):
+    r = one("SELECT product_id FROM product_images WHERE id=?", (iid,))
+    if r:
+        m = one("SELECT COALESCE(MIN(rank),1) AS m FROM product_images WHERE product_id=?", (r["product_id"],))["m"]
+        db().execute("UPDATE product_images SET rank=? WHERE id=?", (m - 1, iid))
+        db().commit()
+    return jsonify({"ok": True})
+
+
+def clean_list(text, maxlen, maxn):
+    out, seen = [], set()
+    for t in re.split(r"[,\n]", text or ""):
+        t = t.strip()
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t[:maxlen])
+    return out[:maxn]
+
+
+@app.route("/api/products/<int:pid>/etsy-draft", methods=["POST"])
+def api_etsy_draft(pid):
+    s = settings()
+    p = one("SELECT * FROM products WHERE id=?", (pid,))
+    if not p:
+        return jsonify({"error": "not found"}), 404
+    if p["etsy_listing_id"]:
+        return jsonify({"error": "A draft already exists for this product. Open it on Etsy to edit it."}), 400
+    if "listings_w" not in (s.get("etsy_scopes") or ""):
+        return jsonify({"error": "Etsy needs re-authorising with permission to create listings (Settings → Etsy connection)."}), 400
+    problems = []
+    if not p["taxonomy_id"]:
+        problems.append("choose a category")
+    if num(p["price"]) <= 0:
+        problems.append("set a price on the product")
+    if not s.get("listing_shipping_profile_id"):
+        problems.append("choose a default shipping profile in Settings")
+    if problems:
+        return jsonify({"error": "Before creating the draft: " + ", ".join(problems) + "."}), 400
+    title = (p["l_title"] or p["name"]).strip()[:140]
+    desc = p["l_desc"] or (s.get("listing_desc_template") or "{name}").replace("{name}", p["name"])
+    tags = clean_list((p["l_tags"] or "") + "," + (s.get("listing_default_tags") or ""), 20, 13)
+    mats = clean_list(p["l_materials"] or s.get("listing_materials"), 45, 13)
+    qty = int(p["l_qty"] or num(s.get("listing_quantity"), 1)) or 1
+    form = {"quantity": qty, "title": title, "description": desc, "price": f"{p['price']:.2f}",
+            "who_made": s.get("listing_who_made") or "i_did", "when_made": s.get("listing_when_made") or "made_to_order",
+            "taxonomy_id": p["taxonomy_id"], "shipping_profile_id": s["listing_shipping_profile_id"],
+            "type": "physical", "is_supply": "false", "should_auto_renew": "false"}
+    if s.get("listing_readiness_state_id"):
+        form["readiness_state_id"] = s["listing_readiness_state_id"]
+    if tags:
+        form["tags"] = ",".join(tags)
+    if mats:
+        form["materials"] = ",".join(mats)
+    per_item_g = num(p["plate_grams"]) / max(p["items_per_plate"] or 1, 1)
+    if per_item_g > 0:
+        form["item_weight"] = round(per_item_g, 1)
+        form["item_weight_unit"] = "g"
+    try:
+        res = etsy_send("POST", f"/shops/{s['etsy_shop_id']}/listings", form=form)
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    lid = res.get("listing_id")
+    url = f"https://www.etsy.com/your/shops/me/tools/listings/{lid}"
+    db().execute("UPDATE products SET etsy_listing_id=?, etsy_listing_url=? WHERE id=?", (lid, url, pid))
+    db().commit()
+    warnings = []
+    for im in rows("SELECT * FROM product_images WHERE product_id=? ORDER BY rank,id", (pid,)):
+        path = os.path.join(IMG_DIR, im["filename"])
+        try:
+            ctype = mimetypes.guess_type(path)[0] or "image/jpeg"
+            etsy_send("POST", f"/shops/{s['etsy_shop_id']}/listings/{lid}/images",
+                      fields={"rank": str(im["rank"] if im["rank"] > 0 else 1)},
+                      files={"image": (im["filename"], open(path, "rb").read(), ctype)})
+        except (EtsyError, OSError) as e:
+            warnings.append(str(e))
+    return jsonify({"ok": True, "listing_id": lid, "url": url, "warnings": warnings})
+
+
+@app.route("/api/products/<int:pid>/unlink-listing", methods=["POST"])
+def api_unlink_listing(pid):
+    db().execute("UPDATE products SET etsy_listing_id=NULL, etsy_listing_url='' WHERE id=?", (pid,))
+    db().commit()
+    return jsonify({"ok": True})
 
 
 init_db()
