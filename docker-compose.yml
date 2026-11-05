@@ -3,7 +3,6 @@
 services:
   etsy-tracker:
     build: .
-    image: etsy-tracker:latest
     container_name: etsy-tracker
     environment:
       - DB_PATH=/data/etsy.db
