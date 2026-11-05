@@ -11,7 +11,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.13.1"
+VERSION = "0.14.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -54,6 +54,7 @@ DEFAULT_SETTINGS = {
     "goal_amount": "2000",
     "electricity_price_per_kwh": "0.27",
     "labour_rate_per_hour": "0",
+    "ship_rates": "",
     "default_postage_cost": "0",
     "default_shipping_charged": "0",
     "target_margin_pct": "40",
@@ -160,6 +161,8 @@ PRODUCT_MIGRATIONS = [
     ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
     ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
     ("plate_energy", "REAL DEFAULT 0"), ("labour_minutes", "INTEGER DEFAULT 0"),
+    ("pack_g", "REAL DEFAULT 0"), ("pack_l", "REAL DEFAULT 0"), ("pack_w", "REAL DEFAULT 0"), ("pack_h", "REAL DEFAULT 0"),
+    ("postage_cost", "REAL DEFAULT 0"),
     ("etsy_state", "TEXT DEFAULT ''"), ("etsy_views", "INTEGER DEFAULT 0"), ("etsy_favs", "INTEGER DEFAULT 0"),
     ("etsy_qty", "INTEGER"), ("etsy_synced", "TEXT DEFAULT ''"),
     ("l_var_name", "TEXT DEFAULT ''"), ("l_var_options", "TEXT DEFAULT ''"), ("l_personalisation", "TEXT DEFAULT ''"),
@@ -1654,6 +1657,53 @@ def api_push_stock(pid):
     db().execute("UPDATE products SET etsy_qty=? WHERE id=?", (qty, pid))
     db().commit()
     return jsonify({"ok": True, "qty": qty})
+
+
+# ---------------------------------------------------------------- shipping calculator
+# Prices are what YOU pay (Royal Mail 1st/2nd stamp prices are VAT-exempt; Tracked/Evri include VAT).
+# Seeded from published rates (Royal Mail parcel prices from 5 Oct 2026); Tracked and Evri are approximate - editable in the app.
+SHIP_DEFAULT = [
+    {"name": "Royal Mail 2nd Class Large Letter", "dims": [35.3, 25, 2.5], "tracked": False, "tiers": [[100, 1.55], [250, 1.90], [500, 2.40], [750, 2.70]]},
+    {"name": "Royal Mail 1st Class Large Letter", "dims": [35.3, 25, 2.5], "tracked": False, "tiers": [[100, 3.30], [750, 3.60]]},
+    {"name": "Royal Mail 2nd Class Small Parcel", "dims": [45, 35, 16], "tracked": False, "tiers": [[2000, 4.60]]},
+    {"name": "Royal Mail 1st Class Small Parcel", "dims": [45, 35, 16], "tracked": False, "tiers": [[2000, 5.90]]},
+    {"name": "Royal Mail 2nd Class Medium Parcel", "dims": [61, 46, 46], "tracked": False, "tiers": [[2000, 7.50], [10000, 9.50], [20000, 14.20]]},
+    {"name": "Royal Mail 1st Class Medium Parcel", "dims": [61, 46, 46], "tracked": False, "tiers": [[2000, 8.70], [10000, 10.90], [20000, 16.90]]},
+    {"name": "Royal Mail Tracked 48 Large Letter (est.)", "dims": [35.3, 25, 2.5], "tracked": True, "tiers": [[1000, 2.85]]},
+    {"name": "Royal Mail Tracked 48 Small Parcel (est.)", "dims": [45, 35, 16], "tracked": True, "tiers": [[2000, 3.65]]},
+    {"name": "Royal Mail Tracked 48 Medium Parcel (est.)", "dims": [61, 46, 46], "tracked": True, "tiers": [[2000, 5.55], [10000, 7.35], [20000, 11.85]]},
+    {"name": "Royal Mail Tracked 24 Small Parcel (est.)", "dims": [45, 35, 16], "tracked": True, "tiers": [[2000, 4.65]]},
+    {"name": "Evri ParcelShop drop-off (est.)", "dims": [120, 60, 60], "tracked": True, "tiers": [[1000, 2.94], [2000, 4.37], [5000, 6.59], [10000, 6.68], [15000, 10.28]]},
+]
+
+
+def ship_rates():
+    raw = settings().get("ship_rates") or ""
+    try:
+        return json.loads(raw) if raw else SHIP_DEFAULT
+    except ValueError:
+        return SHIP_DEFAULT
+
+
+@app.route("/api/shipping/rates", methods=["GET", "PUT", "DELETE"])
+def api_ship_rates():
+    if request.method == "PUT":
+        d = request.get_json(force=True)
+        db().execute("INSERT INTO settings(key,value) VALUES('ship_rates',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(d),))
+        db().commit()
+    elif request.method == "DELETE":
+        db().execute("DELETE FROM settings WHERE key='ship_rates'")
+        db().commit()
+    return jsonify(ship_rates())
+
+
+@app.route("/api/products/<int:pid>/shipping", methods=["POST"])
+def api_product_shipping(pid):
+    d = request.get_json(force=True)
+    db().execute("UPDATE products SET pack_g=?,pack_l=?,pack_w=?,pack_h=?,postage_cost=? WHERE id=?",
+                 (num(d.get("pack_g")), num(d.get("pack_l")), num(d.get("pack_w")), num(d.get("pack_h")), num(d.get("postage_cost")), pid))
+    db().commit()
+    return jsonify({"ok": True})
 
 
 init_db()
