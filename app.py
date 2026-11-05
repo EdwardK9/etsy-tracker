@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.19.1"
+VERSION = "0.19.2"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -1512,7 +1512,9 @@ def push_inventory(s, lid, p, qty, readiness):
         if p["sku"]:
             prod["sku"] = p["sku"][:32]
         products = [prod]
-    etsy_send("PUT", f"/listings/{lid}/inventory", json_body={"products": products, "price_on_property": [], "quantity_on_property": [], "sku_on_property": []})
+    # Etsy requires SKUs to match across all variations unless the SKU is declared as varying with the property.
+    sku_prop = [513] if (seen and p["sku"]) else []
+    etsy_send("PUT", f"/listings/{lid}/inventory", json_body={"products": products, "price_on_property": [], "quantity_on_property": [], "sku_on_property": sku_prop})
     return len(seen)
 
 
