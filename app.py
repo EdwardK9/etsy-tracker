@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.21.0"
+VERSION = "0.22.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -58,14 +58,21 @@ DEFAULT_SETTINGS = {
     "electricity_price_per_kwh": "0.27",
     "labour_rate_per_hour": "0",
     "ship_rates": "",
+    "backup_enabled": "0",
+    "backup_repo": "",
+    "backup_token": "",
+    "backup_branch": "main",
+    "backup_every_hours": "24",
+    "backup_last": "",
+    "backup_status": "",
     "default_postage_cost": "0",
     "default_shipping_charged": "0",
     "target_margin_pct": "40",
     "listing_desc_template": "{name}\n\n[Describe what it fits, size, colour options and anything the buyer should check before ordering.]",
 }
-SECRET_KEYS = ("bambuddy_key", "etsy_secret", "etsy_access_token", "etsy_refresh_token", "etsy_oauth_verifier", "etsy_oauth_state")
+SECRET_KEYS = ("backup_token", "bambuddy_key", "etsy_secret", "etsy_access_token", "etsy_refresh_token", "etsy_oauth_verifier", "etsy_oauth_state")
 INTERNAL_KEYS = ("etsy_access_token", "etsy_refresh_token", "etsy_token_expires", "etsy_user_id", "etsy_shop_id",
-                 "etsy_shop_name", "etsy_oauth_state", "etsy_oauth_verifier", "etsy_last_sync", "etsy_scopes")
+                 "etsy_shop_name", "backup_last", "backup_status", "etsy_oauth_state", "etsy_oauth_verifier", "etsy_last_sync", "etsy_scopes")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
@@ -156,6 +163,14 @@ CREATE TABLE IF NOT EXISTS supplies (
   notes TEXT DEFAULT '',
   active INTEGER DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS product_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL,
+  filename TEXT NOT NULL,
+  orig_name TEXT NOT NULL,
+  size INTEGER DEFAULT 0,
+  added_at TEXT DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS product_supplies (
   product_id INTEGER NOT NULL,
   supply_id INTEGER NOT NULL,
@@ -184,6 +199,7 @@ PRODUCT_MIGRATIONS = [
     ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
     ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
     ("plate_energy", "REAL DEFAULT 0"), ("labour_minutes", "INTEGER DEFAULT 0"),
+    ("model_url", "TEXT DEFAULT ''"),
     ("l_return_policy", "TEXT DEFAULT ''"), ("l_shop_section", "TEXT DEFAULT ''"),
     ("l_ship_profile", "TEXT DEFAULT ''"), ("l_readiness", "TEXT DEFAULT ''"),
     ("item_l", "REAL DEFAULT 0"), ("item_w", "REAL DEFAULT 0"), ("item_h", "REAL DEFAULT 0"),
@@ -200,6 +216,7 @@ TEMPLATE_MIGRATIONS = [
 SALE_MIGRATIONS = [("status", "TEXT DEFAULT 'shipped'"), ("variation", "TEXT DEFAULT ''"),
                    ("tracking", "TEXT DEFAULT ''"), ("shipped_at", "TEXT DEFAULT ''")]
 IMG_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "images")
+FILE_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "files")
 os.makedirs(IMG_DIR, exist_ok=True)
 
 
@@ -449,6 +466,12 @@ def api_product(pid):
             return jsonify({"error": "Product has sales/batches. Mark it inactive instead."}), 400
         db().execute("DELETE FROM history WHERE product_id=?", (pid,))
         db().execute("DELETE FROM product_supplies WHERE product_id=?", (pid,))
+        for fr in rows("SELECT filename FROM product_files WHERE product_id=?", (pid,)):
+            try:
+                os.remove(os.path.join(FILE_DIR, fr["filename"]))
+            except OSError:
+                pass
+        db().execute("DELETE FROM product_files WHERE product_id=?", (pid,))
         db().execute("DELETE FROM products WHERE id=?", (pid,))
         db().commit()
         return jsonify({"ok": True})
@@ -2041,7 +2064,184 @@ def api_product_supplies(pid):
     return jsonify(rows("SELECT supply_id,qty FROM product_supplies WHERE product_id=?", (pid,)))
 
 
+# ---------------------------------------------------------------- product files (3D models etc.)
+@app.route("/api/files")
+def api_files_overview():
+    out = []
+    for p in rows("SELECT id,name,sku,active,model_url,archive_name FROM products ORDER BY active DESC, name COLLATE NOCASE"):
+        p["files"] = rows("SELECT id,orig_name,size,added_at FROM product_files WHERE product_id=? ORDER BY id", (p["id"],))
+        p["images"] = rows("SELECT id,rank FROM product_images WHERE product_id=? ORDER BY rank,id", (p["id"],))
+        out.append(p)
+    return jsonify(out)
+
+
+@app.route("/api/products/<int:pid>/files", methods=["POST"])
+def api_product_files_add(pid):
+    os.makedirs(FILE_DIR, exist_ok=True)
+    n = 0
+    for f in request.files.getlist("files"):
+        orig = os.path.basename(f.filename or "file")
+        name = uuid.uuid4().hex + os.path.splitext(orig)[1].lower()
+        path = os.path.join(FILE_DIR, name)
+        f.save(path)
+        db().execute("INSERT INTO product_files(product_id,filename,orig_name,size) VALUES(?,?,?,?)", (pid, name, orig, os.path.getsize(path)))
+        n += 1
+    db().commit()
+    return jsonify({"ok": True, "added": n})
+
+
+@app.route("/api/files/<int:fid>/download")
+def api_file_download(fid):
+    r = one("SELECT filename,orig_name FROM product_files WHERE id=?", (fid,))
+    if not r:
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(FILE_DIR, r["filename"], as_attachment=True, download_name=r["orig_name"])
+
+
+@app.route("/api/files/<int:fid>", methods=["DELETE"])
+def api_file_delete(fid):
+    r = one("SELECT filename FROM product_files WHERE id=?", (fid,))
+    if r:
+        try:
+            os.remove(os.path.join(FILE_DIR, r["filename"]))
+        except OSError:
+            pass
+        db().execute("DELETE FROM product_files WHERE id=?", (fid,))
+        db().commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/products/<int:pid>/model-url", methods=["POST"])
+def api_model_url(pid):
+    db().execute("UPDATE products SET model_url=? WHERE id=?", ((request.get_json(force=True).get("url") or "").strip(), pid))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------- GitHub backup
+import threading
+import gzip
+
+BACKUP_LOCK = threading.Lock()
+BACKUP_MAX = 45 * 1024 * 1024  # GitHub contents API is unreliable above ~50MB
+
+
+def _gh(method, repo, token, path, body=None):
+    req = urllib.request.Request("https://api.github.com/repos/" + repo + path, method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+                                          "User-Agent": "etsy-tracker-backup", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("GitHub %s: %s" % (e.code, e.read().decode("utf-8", "ignore")[:200]))
+
+
+def _blob_sha(data):
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def _db_snapshot():
+    src = sqlite3.connect(DB_PATH)
+    tmp = DB_PATH + ".bak"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    dst = sqlite3.connect(tmp)
+    src.backup(dst)
+    src.close()
+    for k in ("backup_token", "etsy_access_token", "etsy_refresh_token", "etsy_oauth_verifier", "etsy_oauth_state"):
+        dst.execute("UPDATE settings SET value='' WHERE key=?", (k,))
+    dst.commit()
+    dst.execute("VACUUM")
+    dst.close()
+    with open(tmp, "rb") as f:
+        data = gzip.compress(f.read(), 9, mtime=0)
+    os.remove(tmp)
+    return data
+
+
+def run_backup():
+    """Incremental backup of the database, photos and 3D files to a GitHub repo. Returns a status string."""
+    if not BACKUP_LOCK.acquire(blocking=False):
+        return "A backup is already running"
+    con = sqlite3.connect(DB_PATH)
+    try:
+        s = {r[0]: r[1] for r in con.execute("SELECT key,value FROM settings")}
+        repo, token, branch = (s.get("backup_repo") or "").strip(), (s.get("backup_token") or "").strip(), (s.get("backup_branch") or "main").strip()
+        if not repo or not token:
+            raise RuntimeError("Set the repository and token first")
+        info = _gh("GET", repo, token, "")
+        if not info.get("private"):
+            raise RuntimeError("Repository is public — your data would be exposed. Use a private repo.")
+        # existing blob shas on the branch
+        have = {}
+        try:
+            tree = _gh("GET", repo, token, "/git/trees/%s?recursive=1" % urllib.parse.quote(branch))
+            have = {t["path"]: t["sha"] for t in tree.get("tree", []) if t["type"] == "blob"}
+        except RuntimeError as e:
+            if "404" not in str(e) and "409" not in str(e):
+                raise
+        items = [("etsy-tracker/etsy.db.gz", _db_snapshot())]
+        for folder, name in ((IMG_DIR, "images"), (FILE_DIR, "files")):
+            if os.path.isdir(folder):
+                for fn in sorted(os.listdir(folder)):
+                    p = os.path.join(folder, fn)
+                    if os.path.isfile(p):
+                        items.append(("etsy-tracker/%s/%s" % (name, fn), p))
+        sent = skipped = big = 0
+        for path, data in items:
+            if isinstance(data, str):
+                if os.path.getsize(data) > BACKUP_MAX:
+                    big += 1
+                    continue
+                with open(data, "rb") as f:
+                    data = f.read()
+            if have.get(path) == _blob_sha(data):
+                skipped += 1
+                continue
+            body = {"message": "Backup " + datetime.now().strftime("%Y-%m-%d %H:%M"), "branch": branch,
+                    "content": base64.b64encode(data).decode()}
+            if path in have:
+                body["sha"] = have[path]
+            _gh("PUT", repo, token, "/contents/" + urllib.parse.quote(path), body)
+            sent += 1
+        msg = "OK %s — %d uploaded, %d unchanged%s" % (datetime.now().strftime("%d %b %H:%M"), sent, skipped,
+                                                      (", %d too big (>45MB) skipped" % big) if big else "")
+    except Exception as e:
+        msg = "FAILED %s — %s" % (datetime.now().strftime("%d %b %H:%M"), e)
+    finally:
+        BACKUP_LOCK.release()
+    con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('backup_status',?)", (msg,))
+    con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('backup_last',?)", (str(int(time.time())),))
+    con.commit()
+    con.close()
+    return msg
+
+
+def _backup_loop():
+    while True:
+        time.sleep(600)
+        try:
+            con = sqlite3.connect(DB_PATH)
+            s = {r[0]: r[1] for r in con.execute("SELECT key,value FROM settings")}
+            con.close()
+            if s.get("backup_enabled") == "1":
+                every = max(1.0, float(s.get("backup_every_hours") or 24)) * 3600
+                if time.time() - float(s.get("backup_last") or 0) >= every:
+                    run_backup()
+        except Exception:
+            pass
+
+
+@app.route("/api/backup/github", methods=["POST"])
+def api_backup_github():
+    msg = run_backup()
+    return jsonify({"ok": msg.startswith("OK"), "status": msg})
+
+
 init_db()
+threading.Thread(target=_backup_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5055)))

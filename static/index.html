@@ -110,6 +110,7 @@ const ICONS = {
   import:'<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v3h16v-3"/>',
   settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>',
   listings:'<path d="M20 12l-8 8-9-9V3h8l9 9z"/><circle cx="7.5" cy="7.5" r="1.2"/>',
+  files:'<path d="M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9zM14 3v6h6"/>',
   templates:'<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3"/>',
   pricing:'<path d="M4 4h16v16H4zM8 8h8M8 12h3M8 16h3M14 12h2M14 16h2"/>',
   filament:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>',
@@ -144,7 +145,7 @@ async function safe(fn) { try { await fn(); } catch (e) { toast(e.message, true)
 
 const GROUPS = [
   ['dashboard', 'Dashboard', [['dashboard', 'Overview'], ['history', 'History']]],
-  ['products', 'Products', [['products', 'Products'], ['listings', 'Listings'], ['templates', 'Templates']]],
+  ['products', 'Products', [['products', 'Products'], ['listings', 'Listings'], ['templates', 'Templates'], ['files', 'Files']]],
   ['orders', 'Orders', [['orders', 'Board'], ['sales', 'Sales'], ['import', 'Import']]],
   ['stock', 'Stock', [['stock', 'Printing'], ['filament', 'Filament'], ['supplies', 'Supplies']]],
   ['pricing', 'Pricing', [['pricing', 'Pricing'], ['shipping', 'Shipping & boxes']]],
@@ -514,6 +515,34 @@ async function templates() {
     <div class="mute" style="font-size:12px">${(t.tags || '').split(',').filter(x => x.trim()).length} tags · ${t.var_source === 'spools' ? esc(t.var_name || 'Colour') + ' from filament ·' : t.var_source === 'fixed' ? 'fixed ' + esc(t.var_name) + ' ·' : ''} ${esc(t.taxonomy_name ? t.taxonomy_name.split(' › ').slice(-1)[0] : 'no category set')}</div>
     <div class="bar" style="margin:12px 0 0"><button class="g" onclick="editTemplate(${t.id})">Edit</button><button class="g" onclick="dupTemplate(${t.id})">Duplicate</button><button class="g" onclick="delTemplate(${t.id})">✕</button></div></div>`).join('')}
   </div>`;
+}
+function fmtSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+async function filesView() {
+  const L = await api('GET', '/api/files');
+  const q = (localStorage.filesQ || '').toLowerCase();
+  $('#main').innerHTML = `<div class="top"><h1>Product files</h1><span class="sp"></span><input id="fq" placeholder="Search products…" value="${esc(localStorage.filesQ || '')}" style="max-width:240px"></div>
+  <div class="note">Keep each product's 3D files, photos and model link in one place. Photos here are the same ones used for Etsy listings. Files are included in the GitHub backup (Settings).</div>
+  <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))">
+  ${L.filter(p => !q || (p.name + ' ' + p.sku).toLowerCase().includes(q)).map(p => `<div class="card" data-p="${p.id}">
+    <div style="font-weight:600;font-size:15px">${esc(p.name)} <span class="mute" style="font-size:12px;font-weight:400">${esc(p.sku || '')}${p.active ? '' : ' · inactive'}</span></div>
+    ${p.archive_name ? `<div class="mute" style="font-size:12px;margin-top:2px">Bambuddy archive: ${esc(p.archive_name)}</div>` : ''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0">${p.images.map(im => `<span style="position:relative"><img src="/api/images/${im.id}/file" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line)"><a data-di="${im.id}" style="position:absolute;top:-5px;right:-5px;cursor:pointer;background:var(--bad);color:#fff;border-radius:50%;width:16px;height:16px;text-align:center;font-size:11px;line-height:16px">×</a></span>`).join('') || '<span class="mute" style="font-size:12px">No photos yet</span>'}</div>
+    <div style="margin:6px 0">${p.files.map(f => `<div style="display:flex;gap:8px;align-items:center;font-size:13px;padding:3px 0"><a href="/api/files/${f.id}/download" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.orig_name)}</a><span class="mute" style="font-size:11px">${fmtSize(f.size)}</span><a data-df="${f.id}" style="cursor:pointer;color:var(--bad)">✕</a></div>`).join('') || '<span class="mute" style="font-size:12px">No 3D files yet</span>'}</div>
+    <input data-url="${p.id}" placeholder="Model link (MakerWorld, Printables…)" value="${esc(p.model_url || '')}" style="margin:6px 0">
+    ${p.model_url ? `<a href="${esc(p.model_url)}" target="_blank" rel="noopener" style="font-size:12px">Open model page ↗</a>` : ''}
+    <div class="bar" style="margin:10px 0 0"><label class="b alt" style="cursor:pointer;margin:0">+ 3D files<input type="file" multiple hidden data-uf="${p.id}"></label><label class="b alt" style="cursor:pointer;margin:0">+ Photos<input type="file" multiple accept="image/png,image/jpeg,image/gif" hidden data-ui="${p.id}"></label></div>
+  </div>`).join('') || '<p class="mute">No products yet.</p>'}</div>`;
+  $('#fq').oninput = e => { localStorage.filesQ = e.target.value; filesView(); };
+  const upload = (url, inp) => safe(async () => {
+    const fd = new FormData(); [...inp.files].forEach(f => fd.append('files', f));
+    toast('Uploading…'); const r = await fetch(url, {method: 'POST', body: fd}); const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.statusText); toast('Uploaded'); filesView();
+  });
+  document.querySelectorAll('[data-uf]').forEach(i => i.onchange = () => upload(`/api/products/${i.dataset.uf}/files`, i));
+  document.querySelectorAll('[data-ui]').forEach(i => i.onchange = () => upload(`/api/products/${i.dataset.ui}/images`, i));
+  document.querySelectorAll('[data-df]').forEach(b => b.onclick = () => confirm('Delete this file?') && safe(async () => { await api('DELETE', `/api/files/${b.dataset.df}`); filesView(); }));
+  document.querySelectorAll('[data-di]').forEach(b => b.onclick = () => confirm('Delete this photo?') && safe(async () => { await api('DELETE', `/api/images/${b.dataset.di}`); filesView(); }));
+  document.querySelectorAll('[data-url]').forEach(i => i.onchange = () => safe(async () => { await api('POST', `/api/products/${i.dataset.url}/model-url`, {url: i.value}); toast('Saved'); filesView(); }));
 }
 async function dupTemplate(id) { const t = TEMPLATES.find(x => x.id === id); await safe(async () => { await api('POST', '/api/templates', {...t, name: t.name + ' (copy)'}); templates(); }); }
 async function delTemplate(id) { if (confirm('Delete this template?')) await safe(async () => { await api('DELETE', `/api/templates/${id}`); templates(); }); }
@@ -1108,6 +1137,16 @@ async function settingsView() {
     ${f('electricity_price_per_kwh', 'Electricity price per kWh (£) — used if Bambuddy has kWh but no cost', 'number')}${f('labour_rate_per_hour', 'Your hands-on rate per hour (£, optional)', 'number')}
     ${f('default_postage_cost', 'Typical postage cost you pay per order (£)', 'number')}${f('default_shipping_charged', 'Typical shipping you charge the buyer (£)', 'number')}
   </div>
+  <h2>Automatic backup to GitHub</h2>
+  <div class="grid" style="max-width:700px">
+    <div><label>Enabled</label><select data-k="backup_enabled"><option value="0" ${S.backup_enabled !== '1' ? 'selected' : ''}>Off</option><option value="1" ${S.backup_enabled === '1' ? 'selected' : ''}>On</option></select></div>
+    <div><label>Every (hours)</label><input type="number" data-k="backup_every_hours" value="${esc(S.backup_every_hours)}"></div>
+    <div><label>Private repo (owner/name)</label><input data-k="backup_repo" placeholder="EdwardK9/etsy-tracker-backup" value="${esc(S.backup_repo)}"></div>
+    <div><label>Branch</label><input data-k="backup_branch" value="${esc(S.backup_branch)}"></div>
+    <div class="full"><label>GitHub token ${S.backup_token_set ? '(saved — leave blank to keep)' : ''}</label><input type="password" data-k="backup_token" placeholder="fine-grained token with Contents: read & write on that repo"></div>
+  </div>
+  <p class="mute">Backs up the database (Etsy login tokens removed), photos and 3D files; only changed files are re-uploaded. The repo <b>must be private</b> — it refuses public ones. Last: <span id="bkstat">${esc(S.backup_status || 'never run')}</span></p>
+  <div class="bar"><button class="g" id="bknow">Back up now</button></div>
   <h2>Etsy fee rates (used when a sale's fees are left blank)</h2>
   <div class="grid" style="max-width:700px">
     ${f('currency', 'Currency symbol')}${f('fee_transaction_pct', 'Transaction fee %', 'number')}
@@ -1118,6 +1157,7 @@ async function settingsView() {
   <p class="mute">These are starting defaults — compare a few sales against your Etsy payment statement and tweak until they match. Fees already saved on past sales don't change.</p>
   <div class="bar"><button class="b" id="save">Save settings</button><span class="sp"></span><a class="b alt" href="/api/backup">Download database backup</a></div>`;
   const collect = () => Object.fromEntries([...document.querySelectorAll('[data-k]')].map(e => [e.dataset.k, e.value]));
+  $('#bknow').onclick = () => safe(async () => { await api('PUT', '/api/settings', collect()); $('#bkstat').textContent = 'Running…'; const r = await api('POST', '/api/backup/github'); $('#bkstat').textContent = r.status; toast(r.ok ? 'Backed up' : 'Backup failed', !r.ok); });
   $('#save').onclick = () => safe(async () => { await api('PUT', '/api/settings', collect()); toast('Saved'); route(); });
   const eres = t => { const e = $('#eres'); if (e) e.innerHTML = t; };
   const fillSel = async (id, url, cur) => { try { const L = await api('GET', url); const el = $(id); el.innerHTML = '<option value="">— none —</option>' + L.map(x => `<option value="${x.id}" ${String(x.id) === String(cur) ? 'selected' : ''}>${esc(x.title)}</option>`).join(''); } catch (e) { $(id).options[0].textContent = 'Could not load: ' + e.message.slice(0, 60); } };
@@ -1147,7 +1187,7 @@ async function settingsView() {
   });
 }
 
-const VIEWS = {dashboard, products, listings, templates, pricing, shipping, history: historyView, filament, stock, supplies, orders, sales, expenses, import: importView, settings: settingsView};
+const VIEWS = {dashboard, products, listings, templates, files: filesView, pricing, shipping, history: historyView, filament, stock, supplies, orders, sales, expenses, import: importView, settings: settingsView};
 route();
 </script>
 </body>
