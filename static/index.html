@@ -93,7 +93,7 @@ label{display:block;font-size:12px;color:var(--mute);margin-bottom:5px;font-weig
 </style>
 </head>
 <body>
-<div class="app"><aside class="side"><div class="logo"><i><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9M3 9v11h18V9M3 9h18M9 20v-6h6v6"/></svg></i><b>Etsy Tracker<small id="ver" class="ver"></small></b></div><nav id="nav"></nav><button class="theme" id="theme" title="Toggle light / dark"></button></aside><main id="main"></main></div>
+<div class="app"><aside class="side"><div class="logo"><i><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9M3 9v11h18V9M3 9h18M9 20v-6h6v6"/></svg></i><b>Etsy Tracker<small id="ver" class="ver"></small></b></div><nav id="nav"></nav><button class="theme" id="theme" title="Toggle light / dark"></button></aside><main><div id="subbar"></div><div id="main"></div></main></div>
 <div id="toast"></div>
 <script>
 const ICONS = {
@@ -167,6 +167,7 @@ function nav() {
   const cur = location.hash.slice(1) || 'dashboard';
   const g = groupOf(cur);
   $('#nav').innerHTML = GROUPS.map(([k, l, subs]) => `<button class="${k === g[0] ? 'on' : ''}" onclick="location.hash='${k === g[0] ? cur : (localStorage.getItem('sub_' + k) || subs[0][0])}'">${ic(k)}<span>${l}</span></button>`).join('');
+  $('#subbar').innerHTML = g[2].length > 1 ? `<div class="subtabs">${g[2].map(([k, l]) => `<a href="#${k}" class="${k === cur ? 'on' : ''}">${l}</a>`).join('')}</div>` : '';
   return cur;
 }
 async function route() {
@@ -178,7 +179,6 @@ async function route() {
   await safe(() => VIEWS[t]());
   const g = groupOf(t);
   try { localStorage.setItem('sub_' + g[0], t); } catch (e) {}
-  if (g[2].length > 1) $('#main').insertAdjacentHTML('afterbegin', `<div class="subtabs">${g[2].map(([k, l]) => `<a href="#${k}" class="${k === t ? 'on' : ''}">${l}</a>`).join('')}</div>`);
 }
 window.addEventListener('hashchange', route);
 
