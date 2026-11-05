@@ -10,7 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -51,6 +51,8 @@ DEFAULT_SETTINGS = {
     "listing_materials": "PLA",
     "colour_min_remaining_g": "50",
     "goal_amount": "2000",
+    "electricity_price_per_kwh": "0.27",
+    "labour_rate_per_hour": "0",
     "default_postage_cost": "0",
     "default_shipping_charged": "0",
     "target_margin_pct": "40",
@@ -156,6 +158,7 @@ PRODUCT_MIGRATIONS = [
     ("l_title", "TEXT DEFAULT ''"), ("l_desc", "TEXT DEFAULT ''"), ("l_tags", "TEXT DEFAULT ''"),
     ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
     ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
+    ("plate_energy", "REAL DEFAULT 0"), ("labour_minutes", "INTEGER DEFAULT 0"),
     ("l_var_name", "TEXT DEFAULT ''"), ("l_var_options", "TEXT DEFAULT ''"), ("l_personalisation", "TEXT DEFAULT ''"),
 ]
 TEMPLATE_MIGRATIONS = [
@@ -269,10 +272,16 @@ def today():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def labour_rate():
+    if "labour_rate" not in g:
+        g.labour_rate = num(settings().get("labour_rate_per_hour"))
+    return g.labour_rate
+
+
 def unit_cost_of(p):
-    per_plate = num(p.get("plate_cost"))
+    per_plate = num(p.get("plate_cost")) + num(p.get("plate_energy"))
     ipp = max(int(num(p.get("items_per_plate"), 1)), 1)
-    return round(per_plate / ipp + num(p.get("extra_cost")), 4)
+    return round(per_plate / ipp + num(p.get("extra_cost")) + num(p.get("labour_minutes")) / 60.0 * labour_rate(), 4)
 
 
 def calc_fees(gross, qty, offsite, s):
@@ -342,13 +351,13 @@ def api_products():
         d = request.get_json(force=True)
         cur = db().execute(
             """INSERT INTO products(name,sku,price,archive_id,archive_name,plate_grams,plate_cost,
-               items_per_plate,extra_cost,print_minutes,reorder_at,active,notes)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               items_per_plate,extra_cost,print_minutes,reorder_at,active,notes,plate_energy,labour_minutes)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (d.get("name", "").strip() or "Untitled", d.get("sku", ""), num(d.get("price")),
              d.get("archive_id") or None, d.get("archive_name", ""), num(d.get("plate_grams")),
              num(d.get("plate_cost")), max(int(num(d.get("items_per_plate"), 1)), 1),
              num(d.get("extra_cost")), int(num(d.get("print_minutes"))), int(num(d.get("reorder_at"))),
-             1 if d.get("active", 1) else 0, d.get("notes", "")))
+             1 if d.get("active", 1) else 0, d.get("notes", ""), num(d.get("plate_energy")), int(num(d.get("labour_minutes")))))
         pid = cur.lastrowid
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (pid, "price", num(d.get("price"))))
         p = one("SELECT * FROM products WHERE id=?", (pid,))
@@ -376,10 +385,10 @@ def api_product(pid):
     for k in ("name", "sku", "archive_name", "notes"):
         if k in d:
             new[k] = d[k]
-    for k in ("price", "plate_grams", "plate_cost", "extra_cost"):
+    for k in ("price", "plate_grams", "plate_cost", "extra_cost", "plate_energy"):
         if k in d:
             new[k] = num(d[k])
-    for k in ("items_per_plate", "print_minutes", "reorder_at"):
+    for k in ("items_per_plate", "print_minutes", "reorder_at", "labour_minutes"):
         if k in d:
             new[k] = max(int(num(d[k])), 1 if k == "items_per_plate" else 0)
     if "archive_id" in d:
@@ -393,10 +402,10 @@ def api_product(pid):
 def save_product(new, old):
     db().execute(
         """UPDATE products SET name=?,sku=?,price=?,archive_id=?,archive_name=?,plate_grams=?,plate_cost=?,
-           items_per_plate=?,extra_cost=?,print_minutes=?,reorder_at=?,active=?,notes=? WHERE id=?""",
+           items_per_plate=?,extra_cost=?,print_minutes=?,reorder_at=?,active=?,notes=?,plate_energy=?,labour_minutes=? WHERE id=?""",
         (new["name"], new["sku"], new["price"], new["archive_id"], new["archive_name"], new["plate_grams"],
          new["plate_cost"], new["items_per_plate"], new["extra_cost"], new["print_minutes"], new["reorder_at"],
-         new["active"], new["notes"], new["id"]))
+         new["active"], new["notes"], new["plate_energy"], new["labour_minutes"], new["id"]))
     if abs(num(new["price"]) - num(old["price"])) > 1e-9:
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (new["id"], "price", new["price"]))
     if abs(unit_cost_of(new) - unit_cost_of(old)) > 1e-9:
@@ -451,6 +460,8 @@ def norm_archive(a, s):
         "minutes": int(num(a.get("print_time_seconds")) // 60),
         "type": a.get("filament_type", ""),
         "objects": int(num(a.get("object_count"))) or None,
+        "energy": round(num(a.get("energy_cost")) or num(a.get("energy_kwh")) * num(s.get("electricity_price_per_kwh")), 4),
+        "energy_kwh": num(a.get("energy_kwh")),
     }
 
 
@@ -503,7 +514,7 @@ def api_refresh_bb(pid):
         return jsonify({"error": str(e)}), 502
     n = norm_archive(a, settings())
     new = dict(p)
-    new.update(plate_grams=n["grams"], plate_cost=n["cost"], archive_name=n["name"])
+    new.update(plate_grams=n["grams"], plate_cost=n["cost"], archive_name=n["name"], plate_energy=n["energy"])
     if n["minutes"]:
         new["print_minutes"] = n["minutes"] // max(p["items_per_plate"], 1)
     save_product(new, p)
@@ -1328,6 +1339,29 @@ def api_template(tid):
     db().commit()
     return jsonify({"ok": True})
 
+
+
+@app.route("/api/bambuddy/spools")
+def api_bb_spools():
+    s = settings()
+    try:
+        data = as_list(bb_get("/inventory/spools"))
+    except BBError as e:
+        return jsonify({"error": str(e)}), 502
+    out = []
+    for sp in data:
+        if sp.get("archived_at"):
+            continue
+        label = num(sp.get("label_weight"), 1000)
+        used = num(sp.get("weight_used"))
+        remaining = max(label - used, 0)
+        cpk = sp.get("cost_per_kg")
+        cpk = num(cpk) if cpk not in (None, "") else num(s.get("default_cost_per_kg"))
+        out.append({"id": sp.get("id"), "brand": sp.get("brand") or "", "material": sp.get("material") or "",
+                    "subtype": sp.get("subtype") or "", "colour": sp.get("color_name") or "", "rgba": sp.get("rgba") or "",
+                    "label_g": round(label), "remaining_g": round(remaining), "pct": round(remaining / label * 100) if label else 0,
+                    "cost_per_kg": round(cpk, 2), "value": round(remaining / 1000 * cpk, 2)})
+    return jsonify(sorted(out, key=lambda x: (x["material"], x["colour"].lower())))
 
 @app.route("/api/bambuddy/colours")
 def api_bb_colours():
