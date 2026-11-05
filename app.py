@@ -10,7 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -112,6 +112,17 @@ CREATE TABLE IF NOT EXISTS product_images (
   filename TEXT NOT NULL,
   rank INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS listing_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  title TEXT DEFAULT '',
+  description TEXT DEFAULT '',
+  tags TEXT DEFAULT '',
+  materials TEXT DEFAULT '',
+  quantity INTEGER DEFAULT 0,
+  taxonomy_id INTEGER,
+  taxonomy_name TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS expenses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date TEXT NOT NULL,
@@ -145,6 +156,64 @@ IMG_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "images")
 os.makedirs(IMG_DIR, exist_ok=True)
 
 
+
+def _brand_desc(brand_line, range_name, disclaimer_brand):
+    return (
+        "{name}\n\n"
+        f"A practical 3D printed holder made to fit {brand_line}. Keep your workshop, garage or van tidy and your tools and batteries within easy reach.\n\n"
+        "✔ DESIGNED FOR\n"
+        f"• {range_name}: [list the exact tools / batteries / chargers this fits]\n\n"
+        "✔ DETAILS\n"
+        "• Material: PLA, printed to order\n"
+        "• Size: [dimensions]\n"
+        "• Colours: [colours available - choose from the dropdown]\n"
+        "• Fixings: [screws included / not included - use screws suitable for your wall]\n\n"
+        "✔ GOOD TO KNOW\n"
+        "• Made on a 3D printer, so fine layer lines are normal.\n"
+        "• Please check the compatibility list above before ordering. Not sure if it fits your model? Message me and I'll happily check.\n"
+        "• Colours can look slightly different on different screens.\n\n"
+        f"This is an independent product made to fit {disclaimer_brand} tools. It is not made, endorsed or sponsored by {disclaimer_brand}."
+    )
+
+
+SEED_TEMPLATES = [
+    ("Einhell Power X-Change holder",
+     "{name} | Einhell Power X-Change 18V Holder | 3D Printed Wall Mount | Workshop & Garage Storage",
+     _brand_desc("Einhell Power X-Change (PXC) 18V tools and batteries", "Einhell Power X-Change 18V range", "Einhell"),
+     "einhell holder, power x change, einhell pxc, 18v battery holder, tool wall mount, pxc battery mount, workshop storage, garage organiser, tool storage, 3d printed, van storage, gift for diyer, diy gift"),
+    ("Titan TXP (Screwfix) holder",
+     "{name} | Titan TXP 18V Holder | 3D Printed Wall Mount | Workshop & Garage Storage",
+     _brand_desc("Titan TXP 18V tools and batteries (sold at Screwfix)", "Titan TXP 18V range", "Titan or Screwfix"),
+     "titan txp, titan 18v, titan holder, 18v battery holder, tool wall mount, screwfix tools, workshop storage, garage organiser, tool storage, 3d printed, van storage, gift for diyer, diy gift"),
+    ("Erbauer EXT (Screwfix) holder",
+     "{name} | Erbauer EXT 18V Holder | 3D Printed Wall Mount | Workshop & Garage Storage",
+     _brand_desc("Erbauer EXT 18V tools and batteries (sold at Screwfix)", "Erbauer EXT 18V range", "Erbauer or Screwfix"),
+     "erbauer ext, erbauer 18v, erbauer holder, 18v battery holder, tool wall mount, screwfix tools, workshop storage, garage organiser, tool storage, 3d printed, van storage, gift for diyer, diy gift"),
+    ("Generic tool holder / wall mount",
+     "{name} | 3D Printed Tool Holder | Wall Mount Storage for Workshop, Garage & Shed",
+     "{name}\n\nA practical 3D printed holder to keep your tools organised and easy to reach.\n\n"
+     "✔ DETAILS\n• Material: PLA, printed to order\n• Size: [dimensions]\n• Holds: [what it holds / fits]\n• Colours: [colours available - choose from the dropdown]\n"
+     "• Fixings: [screws included / not included]\n\n✔ GOOD TO KNOW\n• Made on a 3D printer, so fine layer lines are normal.\n"
+     "• Please check the size and fit details above before ordering. Questions? Message me and I'll help.\n• Colours can look slightly different on different screens.",
+     "tool holder, tool wall mount, tool storage, workshop storage, garage organiser, shed storage, 3d printed, wall mounted, tool organiser, gift for diyer, diy gift, van storage, workshop gift"),
+    ("Replacement part / accessory",
+     "{name} | 3D Printed Replacement Part for [brand and model] | Spare Part Accessory",
+     "{name}\n\nA 3D printed replacement part / accessory made to fit [brand and model].\n\n"
+     "✔ FITS\n• [brand, model and part number it replaces]\n\n✔ DETAILS\n• Material: PLA, printed to order [use PETG if more heat resistance is needed]\n"
+     "• Dimensions: [key measurements]\n• Colour: [colour]\n\n✔ BEFORE YOU ORDER\n"
+     "• Please measure your original part and compare it with the dimensions above.\n• 3D printed parts are not identical to injection-moulded originals and may not suit high-load or high-heat uses.\n"
+     "• Unsure? Message me with your model number and I'll confirm before you buy.\n\nThis is an independent replacement part. It is not made or endorsed by the original manufacturer.",
+     "replacement part, spare part, 3d printed part, vacuum accessory, hoover spare, repair part, diy repair, custom fit part, made to order, appliance spare, tool accessory, fix it, workshop part"),
+]
+
+
+def seed_templates(con):
+    if con.execute("SELECT COUNT(*) FROM listing_templates").fetchone()[0] == 0:
+        for name, title, desc, tags in SEED_TEMPLATES:
+            con.execute("INSERT INTO listing_templates(name,title,description,tags,materials,quantity) VALUES(?,?,?,?,?,?)",
+                        (name, title, desc, tags, "PLA", 5))
+
+
 def init_db():
     con = sqlite3.connect(DB_PATH)
     con.executescript(SCHEMA)
@@ -154,6 +223,7 @@ def init_db():
             con.execute(f"ALTER TABLE products ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
         con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
+    seed_templates(con)
     con.commit()
     con.close()
 
@@ -1151,6 +1221,34 @@ def api_etsy_draft(pid):
 @app.route("/api/products/<int:pid>/unlink-listing", methods=["POST"])
 def api_unlink_listing(pid):
     db().execute("UPDATE products SET etsy_listing_id=NULL, etsy_listing_url='' WHERE id=?", (pid,))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------- listing templates
+@app.route("/api/templates", methods=["GET", "POST"])
+def api_templates():
+    if request.method == "POST":
+        d = request.get_json(force=True)
+        cur = db().execute(
+            "INSERT INTO listing_templates(name,title,description,tags,materials,quantity,taxonomy_id,taxonomy_name) VALUES(?,?,?,?,?,?,?,?)",
+            (d.get("name", "").strip() or "New template", d.get("title", ""), d.get("description", ""), d.get("tags", ""),
+             d.get("materials", ""), int(num(d.get("quantity"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", "")))
+        db().commit()
+        return jsonify({"id": cur.lastrowid})
+    return jsonify(rows("SELECT * FROM listing_templates ORDER BY id"))
+
+
+@app.route("/api/templates/<int:tid>", methods=["PUT", "DELETE"])
+def api_template(tid):
+    if request.method == "DELETE":
+        db().execute("DELETE FROM listing_templates WHERE id=?", (tid,))
+        db().commit()
+        return jsonify({"ok": True})
+    d = request.get_json(force=True)
+    db().execute("""UPDATE listing_templates SET name=?,title=?,description=?,tags=?,materials=?,quantity=?,taxonomy_id=?,taxonomy_name=? WHERE id=?""",
+                 (d.get("name", "").strip() or "Template", d.get("title", ""), d.get("description", ""), d.get("tags", ""),
+                  d.get("materials", ""), int(num(d.get("quantity"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", ""), tid))
     db().commit()
     return jsonify({"ok": True})
 

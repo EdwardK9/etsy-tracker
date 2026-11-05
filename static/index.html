@@ -91,6 +91,7 @@ const ICONS = {
   import:'<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v3h16v-3"/>',
   settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>',
   listings:'<path d="M20 12l-8 8-9-9V3h8l9 9z"/><circle cx="7.5" cy="7.5" r="1.2"/>',
+  templates:'<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3"/>',
   money:'<path d="M12 2v20M17 6H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',
   tag:'<path d="M20 12l-8 8-9-9V3h8l9 9z"/><circle cx="7.5" cy="7.5" r="1.2"/>',
   truck:'<path d="M1 6h13v11H1zM14 10h5l3 3v4h-8"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
@@ -120,7 +121,7 @@ function toast(msg, bad) {
 }
 async function safe(fn) { try { await fn(); } catch (e) { toast(e.message, true); } }
 
-const TABS = [['dashboard','Dashboard'],['products','Products'],['listings','Listings'],['stock','Printing & Stock'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
+const TABS = [['dashboard','Dashboard'],['products','Products'],['listings','Listings'],['templates','Templates'],['stock','Printing & Stock'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
 const TITLES = Object.fromEntries(TABS);
 const SUN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4l1.4-1.4"/></svg>';
 const MOON = '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>';
@@ -302,11 +303,13 @@ async function listings() {
 
 async function editListing(id) {
   const p = PRODUCTS.find(x => x.id === id);
+  const TPL = await api('GET', '/api/templates');
   const defTpl = (S.listing_desc_template || '{name}').replace(/\{name\}/g, p.name);
   const others = PRODUCTS.filter(x => x.id !== id && (x.l_title || x.l_desc || x.taxonomy_id));
   let tax = {id: p.taxonomy_id, name: p.taxonomy_name};
   const m = modal(`<h2 style="margin-top:0">Listing — ${esc(p.name)}</h2>
   <div class="grid">
+    ${TPL.length ? `<div class="full"><label>Apply a template (fills title, description, tags, materials, quantity, category)</label><select id="l_tplsel"><option value="">Choose a template…</option>${TPL.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>` : ''}
     ${others.length ? `<div class="full"><label>Copy details from another product (title, description, tags, category…)</label><select id="l_copy"><option value="">—</option>${others.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></div>` : ''}
     <div class="full"><label>Title <span id="l_tc" class="mute"></span></label><input id="l_title" maxlength="140" value="${esc(p.l_title || p.name)}"></div>
     <div class="full"><label>Description <button class="g" id="l_tpl" style="margin-left:6px">Use template</button></label><textarea id="l_desc" rows="7">${esc(p.l_desc || defTpl)}</textarea></div>
@@ -326,6 +329,13 @@ async function editListing(id) {
   const counters = () => { $('#l_tc', m).textContent = `${$('#l_title', m).value.length}/140`; $('#l_gc', m).textContent = `${(($('#l_tags', m).value + ',' + (S.listing_default_tags || '')).split(',').map(x => x.trim()).filter(Boolean).length)}/13 incl. defaults`; };
   m.addEventListener('input', counters); counters();
   $('#l_tpl', m).onclick = () => { $('#l_desc', m).value = defTpl; };
+  const tsel = $('#l_tplsel', m);
+  if (tsel) tsel.onchange = () => { const t = TPL.find(x => x.id == tsel.value); if (!t) return;
+    const fill = x => (x || '').split('{name}').join(p.name);
+    $('#l_title', m).value = fill(t.title).slice(0, 140); $('#l_desc', m).value = fill(t.description); $('#l_tags', m).value = t.tags || '';
+    if (t.materials) $('#l_mat', m).value = t.materials; if (t.quantity) $('#l_qty', m).value = t.quantity;
+    if (t.taxonomy_id) { tax = {id: t.taxonomy_id, name: t.taxonomy_name}; $('#l_taxcur', m).textContent = 'Selected: ' + tax.name; }
+    counters(); toast('Template applied — check the [bracketed] bits'); };
   const copy = $('#l_copy', m);
   if (copy) copy.onchange = () => { const o = PRODUCTS.find(x => x.id == copy.value); if (!o) return;
     $('#l_title', m).value = o.l_title || o.name; $('#l_desc', m).value = (o.l_desc || '').split(o.name).join(p.name); $('#l_tags', m).value = o.l_tags || ''; $('#l_mat', m).value = o.l_materials || '';
@@ -361,6 +371,59 @@ async function editListing(id) {
       $('#l_msg', m).innerHTML = `<div class="note"><b class="good">Draft created.</b> <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">Open it on Etsy ↗</a> to finish and publish.${r.warnings.length ? '<br><span class="bad">Photo problems: ' + r.warnings.map(esc).join('; ') + '</span>' : ''}</div>`;
       route();
     } catch (e) { $('#l_msg', m).innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  });
+}
+
+
+/* ---------------- Templates ---------------- */
+let TEMPLATES = [];
+async function templates() {
+  TEMPLATES = await api('GET', '/api/templates');
+  $('#main').innerHTML = `<div class="top"><h1>Listing templates</h1><span class="sp"></span><button class="b" onclick="editTemplate()">+ New template</button></div>
+  <div class="note">Templates hold the repeatable parts of a listing — title pattern, description, tags, materials and category. In a product's listing, choose <b>Apply template</b> to fill it all in.
+  Use <b>{name}</b> where the product name should go, and replace anything in [square brackets] before you publish. The starter templates are examples — edit them freely.</div>
+  <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">
+  ${TEMPLATES.map(t => `<div class="card"><div style="font-weight:600;font-size:15px">${esc(t.name)}</div>
+    <div class="mute" style="margin:6px 0;font-size:12px;min-height:34px">${esc(t.title)}</div>
+    <div class="mute" style="font-size:12px">${(t.tags || '').split(',').filter(x => x.trim()).length} tags · ${esc(t.taxonomy_name ? t.taxonomy_name.split(' › ').slice(-1)[0] : 'no category set')}</div>
+    <div class="bar" style="margin:12px 0 0"><button class="g" onclick="editTemplate(${t.id})">Edit</button><button class="g" onclick="dupTemplate(${t.id})">Duplicate</button><button class="g" onclick="delTemplate(${t.id})">✕</button></div></div>`).join('')}
+  </div>`;
+}
+async function dupTemplate(id) { const t = TEMPLATES.find(x => x.id === id); await safe(async () => { await api('POST', '/api/templates', {...t, name: t.name + ' (copy)'}); templates(); }); }
+async function delTemplate(id) { if (confirm('Delete this template?')) await safe(async () => { await api('DELETE', `/api/templates/${id}`); templates(); }); }
+function editTemplate(id) {
+  const t = TEMPLATES.find(x => x.id === id) || {name: '', title: '{name} | ', description: '{name}\n\n', tags: '', materials: 'PLA', quantity: 5, taxonomy_id: null, taxonomy_name: ''};
+  let tax = {id: t.taxonomy_id, name: t.taxonomy_name};
+  const m = modal(`<h2>${id ? 'Edit' : 'New'} template</h2><div class="grid">
+    <div class="full"><label>Template name</label><input id="t_name" value="${esc(t.name)}"></div>
+    <div class="full"><label>Title pattern — {name} = product name <span id="t_tc" class="mute"></span></label><input id="t_title" value="${esc(t.title)}"></div>
+    <div class="full"><label>Description</label><textarea id="t_desc" rows="12">${esc(t.description)}</textarea></div>
+    <div class="full"><label>Tags (comma separated — Etsy allows 13, up to 20 characters each) <span id="t_gc" class="mute"></span></label><textarea id="t_tags" rows="3">${esc(t.tags)}</textarea></div>
+    <div><label>Materials</label><input id="t_mat" value="${esc(t.materials)}"></div>
+    <div><label>Stock quantity</label><input id="t_qty" type="number" min="1" value="${t.quantity || 5}"></div>
+    <div class="full"><label>Category</label><div id="t_taxcur" class="mute" style="margin-bottom:6px">${tax.id ? 'Selected: ' + esc(tax.name) : 'None selected — pick once and every product using this template gets it'}</div>
+      <div style="display:flex;gap:6px"><input id="t_taxq" placeholder="e.g. tool holder, wall mount…" style="flex:1"><button class="g" id="t_taxgo">Search</button></div><div id="t_taxres"></div></div>
+  </div>
+  <div class="bar" style="margin:14px 0 0"><button class="b" id="t_save">Save template</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  const counters = () => {
+    $('#t_tc', m).textContent = `${$('#t_title', m).value.length} chars before name is added (max 140 in total)`;
+    const tags = $('#t_tags', m).value.split(',').map(x => x.trim()).filter(Boolean);
+    const long = tags.filter(x => x.length > 20).length;
+    $('#t_gc', m).innerHTML = `${tags.length}/13${long ? ` · <span class="bad">${long} over 20 chars</span>` : ''}`;
+  };
+  m.addEventListener('input', counters); counters();
+  const search = () => safe(async () => {
+    const L = await api('GET', '/api/etsy/taxonomy?q=' + encodeURIComponent($('#t_taxq', m).value));
+    $('#t_taxres', m).innerHTML = L.map((n, i) => `<div class="pick" data-i="${i}">${esc(n.path)}</div>`).join('') || '<div class="mute" style="margin-top:6px">No matches.</div>';
+    m.querySelectorAll('#t_taxres .pick').forEach(el => el.onclick = () => { const n = L[+el.dataset.i]; tax = {id: n.id, name: n.path}; $('#t_taxcur', m).textContent = 'Selected: ' + n.path; $('#t_taxres', m).innerHTML = ''; });
+  });
+  $('#t_taxgo', m).onclick = search;
+  $('#t_taxq', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); search(); } };
+  $('#t_save', m).onclick = () => safe(async () => {
+    const body = {name: $('#t_name', m).value, title: $('#t_title', m).value, description: $('#t_desc', m).value, tags: $('#t_tags', m).value,
+      materials: $('#t_mat', m).value, quantity: $('#t_qty', m).value, taxonomy_id: tax.id, taxonomy_name: tax.name};
+    await api(id ? 'PUT' : 'POST', id ? `/api/templates/${id}` : '/api/templates', body);
+    m.remove(); templates();
   });
 }
 
@@ -549,7 +612,7 @@ async function settingsView() {
   });
 }
 
-const VIEWS = {dashboard, products, listings, stock, sales, expenses, import: importView, settings: settingsView};
+const VIEWS = {dashboard, products, listings, templates, stock, sales, expenses, import: importView, settings: settingsView};
 route();
 </script>
 </body>
