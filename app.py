@@ -10,7 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -445,6 +445,11 @@ def save_product(new, old):
     if abs(unit_cost_of(new) - unit_cost_of(old)) > 1e-9:
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (new["id"], "cost", unit_cost_of(new)))
     db().commit()
+
+
+@app.route("/api/history")
+def api_history_all():
+    return jsonify(rows("SELECT product_id,kind,value,changed_at FROM history ORDER BY changed_at,id"))
 
 
 @app.route("/api/products/<int:pid>/history")
