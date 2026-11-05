@@ -10,6 +10,7 @@ from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
+VERSION = "0.3.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -28,7 +29,22 @@ DEFAULT_SETTINGS = {
     "fee_listing_per_item": "0.15",
     "fee_vat_pct": "0",
     "fee_offsite_ads_pct": "15",
+    "etsy_keystring": "",
+    "etsy_secret": "",
+    "etsy_redirect_uri": "",
+    "etsy_access_token": "",
+    "etsy_refresh_token": "",
+    "etsy_token_expires": "0",
+    "etsy_user_id": "",
+    "etsy_shop_id": "",
+    "etsy_shop_name": "",
+    "etsy_oauth_state": "",
+    "etsy_oauth_verifier": "",
+    "etsy_last_sync": "",
 }
+SECRET_KEYS = ("bambuddy_key", "etsy_secret", "etsy_access_token", "etsy_refresh_token", "etsy_oauth_verifier", "etsy_oauth_state")
+INTERNAL_KEYS = ("etsy_access_token", "etsy_refresh_token", "etsy_token_expires", "etsy_user_id", "etsy_shop_id",
+                 "etsy_shop_name", "etsy_oauth_state", "etsy_oauth_verifier", "etsy_last_sync")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
@@ -167,15 +183,27 @@ def api_settings():
     if request.method == "PUT":
         data = request.get_json(force=True)
         for k, v in data.items():
-            if k == "bambuddy_key" and not v:
-                continue  # blank = keep existing key
-            if k in DEFAULT_SETTINGS:
-                db().execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, str(v)))
+            if k not in DEFAULT_SETTINGS or k in INTERNAL_KEYS:
+                continue
+            if k in SECRET_KEYS and not v:
+                continue  # blank = keep existing secret
+            set_setting(k, v)
         db().commit()
     s = settings()
-    s["bambuddy_key_set"] = bool(s.get("bambuddy_key"))
-    s["bambuddy_key"] = ""  # never send the key back to the browser
+    for k in SECRET_KEYS:
+        s[k + "_set"] = bool(s.get(k))
+        s[k] = ""  # never send secrets back to the browser
+    s["etsy_connected"] = bool(s.get("etsy_refresh_token_set") and s.get("etsy_shop_id"))
     return jsonify(s)
+
+
+@app.route("/api/version")
+def api_version():
+    return jsonify({"version": VERSION})
+
+
+def set_setting(k, v):
+    db().execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, str(v)))
 
 
 # ---------------------------------------------------------------- products
@@ -632,6 +660,211 @@ def api_export(table):
 @app.route("/api/backup")
 def api_backup():
     return send_file(DB_PATH, as_attachment=True, download_name="etsy-backup.db")
+
+
+# ---------------------------------------------------------------- etsy api
+import base64
+import hashlib
+import secrets
+import time
+
+ETSY_API = "https://api.etsy.com/v3/application"
+ETSY_TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token"
+ETSY_SCOPES = "transactions_r shops_r"
+
+
+class EtsyError(Exception):
+    pass
+
+
+def etsy_headers(s, token=None):
+    h = {"x-api-key": f"{s['etsy_keystring']}:{s['etsy_secret']}", "Accept": "application/json"}
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
+
+
+def http_json(url, headers=None, form=None):
+    data = urllib.parse.urlencode(form).encode() if form is not None else None
+    req = urllib.request.Request(url, data=data, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        raise EtsyError(f"Etsy returned HTTP {e.code}: {body}")
+    except Exception as e:
+        raise EtsyError(f"Could not reach Etsy: {e}")
+
+
+def etsy_token_request(form):
+    s = settings()
+    tok = http_json(ETSY_TOKEN_URL, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}, form=form)
+    set_setting("etsy_access_token", tok["access_token"])
+    set_setting("etsy_refresh_token", tok["refresh_token"])
+    set_setting("etsy_token_expires", int(time.time()) + int(tok.get("expires_in", 3600)))
+    set_setting("etsy_user_id", tok["access_token"].split(".")[0])
+    db().commit()
+
+
+def etsy_get(path, params=None):
+    s = settings()
+    if not (s.get("etsy_keystring") and s.get("etsy_secret")):
+        raise EtsyError("Enter your Etsy keystring and shared secret in Settings first.")
+    if not s.get("etsy_refresh_token"):
+        raise EtsyError("Etsy isn't connected yet.")
+    if int(num(s.get("etsy_token_expires"))) < time.time() + 120:
+        etsy_token_request({"grant_type": "refresh_token", "client_id": s["etsy_keystring"], "refresh_token": s["etsy_refresh_token"]})
+        s = settings()
+    url = ETSY_API + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    return http_json(url, headers=etsy_headers(s, s["etsy_access_token"]))
+
+
+@app.route("/api/etsy/auth-url", methods=["POST"])
+def api_etsy_auth_url():
+    s = settings()
+    if not s.get("etsy_keystring") or not s.get("etsy_secret") or not s.get("etsy_redirect_uri"):
+        return jsonify({"error": "Save your keystring, shared secret and redirect URL first."}), 400
+    verifier = secrets.token_urlsafe(64)
+    state = secrets.token_urlsafe(24)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    set_setting("etsy_oauth_verifier", verifier)
+    set_setting("etsy_oauth_state", state)
+    db().commit()
+    q = urllib.parse.urlencode({"response_type": "code", "client_id": s["etsy_keystring"], "redirect_uri": s["etsy_redirect_uri"],
+                                "scope": ETSY_SCOPES, "state": state, "code_challenge": challenge, "code_challenge_method": "S256"},
+                               quote_via=urllib.parse.quote)
+    return jsonify({"url": "https://www.etsy.com/oauth/connect?" + q})
+
+
+@app.route("/api/etsy/connect", methods=["POST"])
+def api_etsy_connect():
+    s = settings()
+    raw = (request.get_json(force=True).get("url") or "").strip()
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw).query) if "?" in raw else {}
+    code = (qs.get("code") or [raw if "=" not in raw else ""])[0]
+    state = (qs.get("state") or [""])[0]
+    if not code:
+        return jsonify({"error": "Couldn't find a code in what you pasted. Paste the full address from the browser bar."}), 400
+    if state and state != s.get("etsy_oauth_state"):
+        return jsonify({"error": "State mismatch - click 'Open Etsy login' again and use the newest redirect."}), 400
+    try:
+        etsy_token_request({"grant_type": "authorization_code", "client_id": s["etsy_keystring"], "redirect_uri": s["etsy_redirect_uri"],
+                            "code": code, "code_verifier": s.get("etsy_oauth_verifier", "")})
+        uid = settings()["etsy_user_id"]
+        shop = etsy_get(f"/users/{uid}/shops")
+        if "results" in shop and shop["results"]:
+            shop = shop["results"][0]
+        set_setting("etsy_shop_id", shop["shop_id"])
+        set_setting("etsy_shop_name", shop.get("shop_name", ""))
+        db().commit()
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"ok": True, "shop": shop.get("shop_name")})
+
+
+@app.route("/api/etsy/disconnect", methods=["POST"])
+def api_etsy_disconnect():
+    for k in ("etsy_access_token", "etsy_refresh_token", "etsy_user_id", "etsy_shop_id", "etsy_shop_name"):
+        set_setting(k, "")
+    set_setting("etsy_token_expires", "0")
+    db().commit()
+    return jsonify({"ok": True})
+
+
+def money_of(m):
+    if not m:
+        return 0.0
+    return num(m.get("amount")) / (num(m.get("divisor"), 100) or 100)
+
+
+@app.route("/api/etsy/sync", methods=["POST"])
+def api_etsy_sync():
+    s = settings()
+    shop = s.get("etsy_shop_id")
+    if not shop:
+        return jsonify({"error": "Etsy isn't connected yet."}), 400
+    body = request.get_json(silent=True) or {}
+    params_base = {"limit": 100, "sort_on": "created", "sort_order": "asc", "was_canceled": "false"}
+    if body.get("full"):
+        pass
+    elif s.get("etsy_last_sync"):
+        params_base["min_created"] = max(int(num(s["etsy_last_sync"])) - 86400 * 2, 0)
+    added = skipped = created = refunded = 0
+    offset = 0
+    newest = int(num(s.get("etsy_last_sync")))
+    try:
+        while True:
+            page = etsy_get(f"/shops/{shop}/receipts", {**params_base, "offset": offset})
+            results = page.get("results", [])
+            for r in results:
+                ts = int(r.get("created_timestamp") or r.get("create_timestamp") or 0)
+                newest = max(newest, ts)
+                if not r.get("is_paid"):
+                    continue
+                if r.get("refunds"):
+                    refunded += 1
+                order = str(r["receipt_id"])
+                date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else today()
+                first = True
+                for t in r.get("transactions", []):
+                    name = (t.get("title") or "Etsy item").strip()
+                    sku = (t.get("sku") or "").strip()
+                    p = one("SELECT * FROM products WHERE sku=? AND sku<>''", (sku,)) if sku else None
+                    if not p:
+                        p = one("SELECT * FROM products WHERE lower(name)=lower(?)", (name,))
+                    if not p:
+                        price = money_of(t.get("price"))
+                        cur = db().execute("INSERT INTO products(name,sku,price) VALUES(?,?,?)", (name, sku, price))
+                        db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (cur.lastrowid, "price", price))
+                        p = one("SELECT * FROM products WHERE id=?", (cur.lastrowid,))
+                        created += 1
+                    if one("SELECT 1 AS x FROM sales WHERE order_ref=? AND product_id=?", (order, p["id"])):
+                        skipped += 1
+                        first = False
+                        continue
+                    d = dict(qty=t.get("quantity") or 1, unit_price=money_of(t.get("price")),
+                             shipping_charged=money_of(r.get("total_shipping_cost")) if first else 0,
+                             discount=money_of(r.get("discount_amt")) if first else 0)
+                    first = False
+                    qty, price, ship, disc, offsite, fees = sale_values(d, p, s)
+                    db().execute(
+                        """INSERT INTO sales(date,order_ref,product_id,qty,unit_price,shipping_charged,discount,postage_cost,
+                           offsite_ad,fees,unit_cost,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (date, order, p["id"], qty, price, ship, disc, 0, 0, fees, unit_cost_of(p), "etsy-api"))
+                    added += 1
+            db().commit()
+            if len(results) < 100:
+                break
+            offset += 100
+    except EtsyError as e:
+        db().commit()
+        return jsonify({"error": str(e)}), 502
+    except KeyError as e:
+        db().commit()
+        return jsonify({"error": f"Unexpected Etsy response (missing {e}). Use 'Show ledger/receipt sample' and send me the output."}), 502
+    if newest:
+        set_setting("etsy_last_sync", newest)
+        db().commit()
+    return jsonify({"added": added, "skipped_duplicates": skipped, "products_created": created, "receipts_with_refunds": refunded})
+
+
+@app.route("/api/etsy/sample")
+def api_etsy_sample():
+    """Debug helper: latest ledger entries + one receipt, so real field values can be inspected."""
+    shop = settings().get("etsy_shop_id")
+    try:
+        ledger = etsy_get(f"/shops/{shop}/payment-account/ledger-entries", {"limit": 15, "min_created": int(time.time()) - 86400 * 60, "max_created": int(time.time())})
+    except EtsyError as e:
+        ledger = {"error": str(e)}
+    try:
+        rec = etsy_get(f"/shops/{shop}/receipts", {"limit": 1, "sort_order": "desc"})
+        for r in rec.get("results", []):
+            for k in ("buyer_email", "name", "first_line", "second_line", "city", "state", "zip", "formatted_address", "seller_email", "payment_email", "buyer_user_id", "message_from_buyer"):
+                r.pop(k, None)  # strip personal data
+    except EtsyError as e:
+        rec = {"error": str(e)}
+    return jsonify({"ledger": ledger, "receipt": rec})
 
 
 init_db()

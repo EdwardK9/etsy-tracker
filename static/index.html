@@ -13,6 +13,7 @@ body{margin:0;background:radial-gradient(1200px 500px at 70% -10%,#1a1f2e55,tran
 .side{width:230px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 14px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:6px}
 .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;padding:4px 10px 18px;letter-spacing:-.2px}
 .logo i{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,var(--acc),var(--acc2));display:grid;place-items:center;box-shadow:0 6px 20px #ff7a3d44}
+.ver{display:block;font-size:11px;font-weight:500;color:var(--mute);letter-spacing:0;margin-top:1px}
 .logo svg{width:18px;height:18px;stroke:#fff}
 nav{display:flex;flex-direction:column;gap:2px}
 nav button{display:flex;align-items:center;gap:11px;background:none;border:0;color:var(--mute);padding:9px 12px;border-radius:10px;cursor:pointer;font:inherit;font-weight:500;text-align:left;transition:.15s}
@@ -70,7 +71,7 @@ label{display:block;font-size:12px;color:var(--mute);margin-bottom:5px;font-weig
 </style>
 </head>
 <body>
-<div class="app"><aside class="side"><div class="logo"><i><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9M3 9v11h18V9M3 9h18M9 20v-6h6v6"/></svg></i><b>Etsy Tracker</b></div><nav id="nav"></nav></aside><main id="main"></main></div>
+<div class="app"><aside class="side"><div class="logo"><i><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9M3 9v11h18V9M3 9h18M9 20v-6h6v6"/></svg></i><b>Etsy Tracker<small id="ver" class="ver"></small></b></div><nav id="nav"></nav></aside><main id="main"></main></div>
 <div id="toast"></div>
 <script>
 const ICONS = {
@@ -120,6 +121,8 @@ function nav() {
 }
 async function route() {
   const t = nav();
+  if (!route.v) { try { route.v = (await api('GET', '/api/version')).version; } catch (e) { route.v = '?'; } }
+  $('#ver').textContent = 'v' + route.v;
   S = await api('GET', '/api/settings');
   PRODUCTS = await api('GET', '/api/products');
   await safe(() => VIEWS[t]());
@@ -298,13 +301,14 @@ function addBatch() {
 async function sales() {
   const L = await api('GET', '/api/sales');
   $('#main').innerHTML = `
-<div class="top"><h1>Sales</h1><span class="sp"></span><a class="b alt" href="/api/export/sales.csv">Export CSV</a><button class="b" onclick="editSale()">+ Record sale</button></div>
+<div class="top"><h1>Sales</h1><span class="sp"></span>${S.etsy_connected ? '<button class="b alt" onclick="quickSync()">↻ Sync from Etsy</button>' : ''}<a class="b alt" href="/api/export/sales.csv">Export CSV</a><button class="b" onclick="editSale()">+ Record sale</button></div>
   <div class="wrap"><table><tr><th>Date</th><th>Order</th><th>Product</th><th class="r">Qty</th><th class="r">Revenue</th><th class="r">Fees</th><th class="r">Postage</th><th class="r">Profit</th><th></th></tr>
   ${L.map(s => `<tr><td>${s.date}</td><td class="mute">${esc(s.order_ref)}</td><td>${esc(s.product)}</td><td class="r">${s.qty}</td><td class="r">${money(s.revenue)}</td>
     <td class="r">${money(s.fees)}</td><td class="r">${money(s.postage_cost)}</td><td class="r ${cls(s.profit)}">${money(s.profit)}</td>
     <td><button class="g" onclick='editSale(${JSON.stringify(s).replace(/'/g, '&#39;')})'>Edit</button> <button class="g" onclick="del('sales',${s.id})">✕</button></td></tr>`).join('') || '<tr><td colspan=9 class="mute">No sales yet.</td></tr>'}
   </table></div>`;
 }
+async function quickSync() { await safe(async () => { toast('Syncing from Etsy…'); const r = await api('POST', '/api/etsy/sync', {}); toast(`Imported ${r.added} new sale lines`); route(); }); }
 function editSale(s) {
   if (!PRODUCTS.length) return toast('Add a product first.', true);
   const e = s || {date: today(), order_ref: '', product_id: PRODUCTS[0].id, qty: 1, unit_price: '', shipping_charged: 0, discount: 0, postage_cost: 0, offsite_ad: 0, fees: '', notes: ''};
@@ -383,6 +387,20 @@ async function settingsView() {
   </div>
   <p class="mute">In Bambuddy create an API key with the <b>Read Status</b> permission (Settings → API Keys).</p>
   <div class="bar"><button class="g" id="test">Test connection</button><span id="tres"></span></div>
+  <h2>Etsy connection</h2>
+  <div class="grid" style="max-width:700px">
+    <div><label>API keystring ${S.etsy_keystring ? '' : ''}</label><input data-k="etsy_keystring" value="${esc(S.etsy_keystring)}"></div>
+    <div><label>Shared secret ${S.etsy_secret_set ? '(saved — leave blank to keep)' : ''}</label><input data-k="etsy_secret" type="password" value=""></div>
+    <div class="full"><label>Redirect URL (must be https and registered on your Etsy app exactly)</label><input data-k="etsy_redirect_uri" placeholder="https://example.com/etsy/callback" value="${esc(S.etsy_redirect_uri)}"></div>
+  </div>
+  ${S.etsy_connected ? `<div class="bar" style="margin-top:12px"><span class="pill">Connected · ${esc(S.etsy_shop_name || 'shop')}</span>
+      <button class="b" id="esync">Sync orders now</button><button class="g" id="efull">Full re-sync</button><button class="g" id="esample">Show sample data</button><button class="g" id="edisc">Disconnect</button></div>
+    <div id="eres" class="mute"></div>` : `<div class="note" style="margin-top:12px;max-width:700px">
+      <b>Connect:</b> save the details above, click <b>Open Etsy login</b> and approve access. Etsy then sends you to your redirect URL — that page may show an error, which is fine.
+      Copy the <b>full address from the browser bar</b> and paste it below.
+      <div class="bar" style="margin:10px 0 0"><button class="b alt" id="eopen">Open Etsy login</button></div>
+      <div style="display:flex;gap:6px;margin-top:8px"><input id="epaste" placeholder="https://…?code=…&state=…" style="flex:1"><button class="b" id="econn">Connect</button></div>
+      <div id="eres" class="mute" style="margin-top:6px"></div></div>`}
   <h2>Etsy fee rates (used when a sale's fees are left blank)</h2>
   <div class="grid" style="max-width:700px">
     ${f('currency', 'Currency symbol')}${f('fee_transaction_pct', 'Transaction fee %', 'number')}
@@ -394,6 +412,25 @@ async function settingsView() {
   <div class="bar"><button class="b" id="save">Save settings</button><span class="sp"></span><a class="b alt" href="/api/backup">Download database backup</a></div>`;
   const collect = () => Object.fromEntries([...document.querySelectorAll('[data-k]')].map(e => [e.dataset.k, e.value]));
   $('#save').onclick = () => safe(async () => { await api('PUT', '/api/settings', collect()); toast('Saved'); route(); });
+  const eres = t => { const e = $('#eres'); if (e) e.innerHTML = t; };
+  const syncRun = (full) => safe(async () => {
+    eres('Syncing…');
+    try { const r = await api('POST', '/api/etsy/sync', {full}); eres(`<span class="good">Imported ${r.added} sale lines</span> · ${r.skipped_duplicates} already had · ${r.products_created} new products${r.receipts_with_refunds ? ' · ' + r.receipts_with_refunds + ' orders have refunds (check them)' : ''}`); }
+    catch (e) { eres(`<span class="bad">${esc(e.message)}</span>`); }
+  });
+  if ($('#eopen')) $('#eopen').onclick = () => safe(async () => {
+    await api('PUT', '/api/settings', collect());
+    const r = await api('POST', '/api/etsy/auth-url'); window.open(r.url, '_blank');
+  });
+  if ($('#econn')) $('#econn').onclick = () => safe(async () => {
+    try { const r = await api('POST', '/api/etsy/connect', {url: $('#epaste').value}); toast('Connected to ' + r.shop); route(); }
+    catch (e) { eres(`<span class="bad">${esc(e.message)}</span>`); }
+  });
+  if ($('#esync')) { $('#esync').onclick = () => syncRun(false); $('#efull').onclick = () => syncRun(true);
+    $('#edisc').onclick = () => safe(async () => { await api('POST', '/api/etsy/disconnect'); route(); });
+    $('#esample').onclick = () => safe(async () => { const r = await api('GET', '/api/etsy/sample');
+      modal(`<h2 style="margin-top:0">Etsy sample data</h2><p class="mute">Personal details are stripped. Send this to Claude if fees or fields look wrong.</p><textarea rows="16" style="font-family:monospace;font-size:12px" readonly>${esc(JSON.stringify(r, null, 1))}</textarea>`); }); }
+
   $('#test').onclick = () => safe(async () => {
     await api('PUT', '/api/settings', collect());
     try { const r = await api('GET', '/api/bambuddy/test'); $('#tres').innerHTML = `<span class="good">Connected${r.spools != null ? ' · ' + r.spools + ' spools found' : ''}</span>`; }
