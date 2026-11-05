@@ -735,13 +735,17 @@ async function shipping() {
   const sel = localStorage.getItem('shipProd') || '';
   const cur = PRODUCTS.find(p => String(p.id) === sel);
   $('#main').innerHTML = `<div class="top"><h1>Shipping calculator</h1></div>
-  <div class="note">Enter the <b>packed</b> parcel (item + packaging). Prices are what <i>you</i> pay. They come from published UK rates (Royal Mail parcel prices from 5 Oct 2026); Royal Mail Tracked and Evri are <b>estimates</b> — check them against your Click &amp; Drop / Evri prices and correct them in the table at the bottom.</div>
+  <div class="note">Enter the <b>packed</b> parcel (item + packaging). Etsy UK labels are <b>Royal Mail Tracked 24/48</b> and <b>Evri</b>, and Etsy only shows the exact price when you buy the label, so the prices below are estimates until you correct them (bottom of page) or pull your real label charges from Etsy (below). Etsy says it doesn't charge VAT on Royal Mail labels, so Etsy's price may come out lower than Click &amp; Drop's VAT-inclusive prices.
+  <label style="margin-top:8px;display:block"><input type="checkbox" id="sh_etsy" style="width:auto" ${localStorage.getItem('shipEtsy') !== '0' ? 'checked' : ''}> Only show services I can buy as Etsy labels</label></div>
   <div class="card" style="margin-bottom:18px"><div class="grid">
     <div class="full"><label>Start from a product (loads its saved parcel size)</label><select id="sh_prod"><option value="">— manual —</option>${act.map(p => `<option value="${p.id}" ${String(p.id) === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
     <div><label>Packed weight (g)</label><input id="sh_g" type="number" step="1" value="${cur && cur.pack_g || ''}"></div>
     <div><label>Length × Width × Height (cm)</label><div style="display:flex;gap:6px"><input id="sh_l" type="number" step="0.1" placeholder="L" value="${cur && cur.pack_l || ''}"><input id="sh_w" type="number" step="0.1" placeholder="W" value="${cur && cur.pack_w || ''}"><input id="sh_h" type="number" step="0.1" placeholder="H" value="${cur && cur.pack_h || ''}"></div></div>
   </div></div>
   <div id="sh_out"></div>
+  ${S.etsy_connected ? `<h2>Actual label costs from Etsy</h2>
+  <p class="mute" style="margin-top:-6px">Reads your Etsy payment ledger for shipping-label charges and fills in the real postage on matching orders — so your profit uses what Etsy actually charged. Use it to check the estimates above, too.</p>
+  <div class="bar"><button class="b alt" id="sh_chk">Check Etsy for label charges</button></div><div id="sh_lab"></div>` : ''}
   <h2>Edit rates</h2>
   <p class="mute" style="margin-top:-6px">Change any price to match what you actually pay (e.g. your Click &amp; Drop online price). Weight columns are “up to” grams.</p>
   <div id="sh_rates"></div>
@@ -749,7 +753,7 @@ async function shipping() {
   const out = () => {
     const g = +$('#sh_g').value || 0, dims = [+$('#sh_l').value || 0, +$('#sh_w').value || 0, +$('#sh_h').value || 0];
     if (!g) { $('#sh_out').innerHTML = '<div class="mute">Enter the packed weight to see prices.</div>'; return; }
-    const o = shipOptions(R, g, dims), ok = o.filter(x => x.ok).sort((a, b) => a.price - b.price);
+    const o = shipOptions(R.filter(s => !$('#sh_etsy').checked || s.etsy), g, dims), ok = o.filter(x => x.ok).sort((a, b) => a.price - b.price);
     const bestTracked = ok.find(x => x.tracked), {r} = feeModel(false);
     const prod = PRODUCTS.find(p => String(p.id) === $('#sh_prod').value);
     $('#sh_out').innerHTML = ok.length ? `<div class="wrap"><table><tr><th>Service</th><th>Tracked</th><th class="r">You pay</th><th class="r">Charge buyer to break even*</th><th></th></tr>
@@ -763,9 +767,19 @@ async function shipping() {
   renderRates();
   ['#sh_g', '#sh_l', '#sh_w', '#sh_h'].forEach(id => $(id).oninput = out);
   $('#sh_prod').onchange = e => { localStorage.setItem('shipProd', e.target.value); route(); };
+  $('#sh_etsy').onchange = e => { localStorage.setItem('shipEtsy', e.target.checked ? '1' : '0'); out(); };
   $('#sh_save').onclick = () => safe(async () => { document.querySelectorAll('[data-r]').forEach(i => { R[+i.dataset.r].tiers[+i.dataset.t][1] = +i.value || 0; }); R = await api('PUT', '/api/shipping/rates', R); toast('Rates saved'); out(); });
   $('#sh_reset').onclick = () => { if (confirm('Reset all shipping rates to the built-in defaults?')) safe(async () => { R = await api('DELETE', '/api/shipping/rates'); renderRates(); out(); toast('Rates reset'); }); };
   out();
+  if ($('#sh_chk')) $('#sh_chk').onclick = () => safe(async () => {
+    $('#sh_lab').innerHTML = '<div class="mute">Checking…</div>';
+    const r = await api('GET', '/api/etsy/label-costs'); const f = r.found;
+    const matched = f.filter(x => x.sale_id && !x.current_postage).length;
+    $('#sh_lab').innerHTML = f.length ? `<div class="wrap"><table><tr><th>Date</th><th>Etsy ledger entry</th><th class="r">Charged</th><th>Matches order</th></tr>${f.map(x => `<tr><td>${x.date}</td><td>${esc(x.description || x.type)} <span class="mute" style="font-size:11px">${esc(x.reference_type)} ${esc(x.reference_id)}</span></td><td class="r">${money(x.amount)}</td><td>${x.sale_id ? '#' + esc(x.order_ref) + (x.current_postage ? ` <span class="mute">(postage already ${money(x.current_postage)})</span>` : '') : '<span class="mute">—</span>'}</td></tr>`).join('')}</table></div>
+      <div class="bar" style="margin-top:10px">${matched ? `<button class="b" id="sh_apply">Apply to ${matched} order${matched > 1 ? 's' : ''}</button>` : ''}<span class="mute">${r.ledger_entries} ledger entries scanned. Compare these amounts with the estimates above and correct the rate table where they differ.</span></div>`
+      : `<div class="note">No label charges found in the last 90 days (${r.ledger_entries} ledger entries scanned). If you've bought labels on Etsy and expected some, send me the output of Settings → Etsy → “Show sample data” so I can match how Etsy names them.</div>`;
+    if ($('#sh_apply')) $('#sh_apply').onclick = () => safe(async () => { const a = await api('POST', '/api/etsy/label-costs', {}); toast(`Postage filled in on ${a.applied} orders`); route(); });
+  });
 }
 async function useShipping(pid, price) {
   await safe(async () => {

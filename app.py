@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.15.0"
+VERSION = "0.16.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -1094,6 +1094,56 @@ def api_etsy_sample():
     return jsonify({"ledger": ledger, "receipt": rec})
 
 
+# ---------------------------------------------------------------- actual Etsy label costs (from the payment ledger)
+LABEL_WORDS = ("label", "postage", "shipping", "royal mail", "evri", "hermes")
+
+
+def fetch_label_entries(days=90):
+    s = settings()
+    now = int(time.time())
+    out, offset = [], 0
+    while offset < 1000:
+        d = etsy_get(f"/shops/{s['etsy_shop_id']}/payment-account/ledger-entries",
+                     {"limit": 100, "offset": offset, "min_created": now - 86400 * days, "max_created": now})
+        res = d.get("results", [])
+        out += res
+        offset += 100
+        if len(res) < 100:
+            break
+    found = []
+    for e in out:
+        text = " ".join(str(e.get(k) or "") for k in ("description", "ledger_type", "reference_type")).lower()
+        if (e.get("amount") or 0) < 0 and any(w in text for w in LABEL_WORDS):
+            found.append({"entry_id": e.get("entry_id"), "date": datetime.utcfromtimestamp(e.get("created_timestamp") or e.get("create_date") or 0).strftime("%Y-%m-%d"),
+                          "amount": round(abs(e["amount"]) / 100.0, 2), "description": e.get("description") or "", "type": e.get("ledger_type") or "",
+                          "reference_type": e.get("reference_type") or "", "reference_id": str(e.get("reference_id") or "")})
+    return found, len(out)
+
+
+@app.route("/api/etsy/label-costs", methods=["GET", "POST"])
+def api_label_costs():
+    """GET: label charges found in the Etsy ledger and which sale they match. POST: apply the matches as postage cost."""
+    try:
+        found, total = fetch_label_entries()
+    except EtsyError as e:
+        return jsonify({"error": str(e)}), 502
+    for f in found:
+        sale = one("SELECT id,order_ref,postage_cost FROM sales WHERE order_ref=? ORDER BY id LIMIT 1", (f["reference_id"],)) if f["reference_id"] else None
+        f["sale_id"] = sale["id"] if sale else None
+        f["order_ref"] = sale["order_ref"] if sale else ""
+        f["current_postage"] = sale["postage_cost"] if sale else None
+    if request.method == "POST":
+        applied = 0
+        for f in found:
+            if f["sale_id"] and not f["current_postage"]:
+                db().execute("UPDATE sales SET postage_cost=? WHERE id=?", (f["amount"], f["sale_id"]))
+                f["current_postage"] = f["amount"]
+                applied += 1
+        db().commit()
+        return jsonify({"applied": applied, "found": found, "ledger_entries": total})
+    return jsonify({"found": found, "ledger_entries": total})
+
+
 # ---------------------------------------------------------------- listings (Etsy drafts)
 import mimetypes
 import re
@@ -1690,11 +1740,13 @@ SHIP_DEFAULT = [
     {"name": "Royal Mail 1st Class Small Parcel", "dims": [45, 35, 16], "tracked": False, "tiers": [[2000, 5.90]]},
     {"name": "Royal Mail 2nd Class Medium Parcel", "dims": [61, 46, 46], "tracked": False, "tiers": [[2000, 7.50], [10000, 9.50], [20000, 14.20]]},
     {"name": "Royal Mail 1st Class Medium Parcel", "dims": [61, 46, 46], "tracked": False, "tiers": [[2000, 8.70], [10000, 10.90], [20000, 16.90]]},
-    {"name": "Royal Mail Tracked 48 Large Letter (est.)", "dims": [35.3, 25, 2.5], "tracked": True, "tiers": [[1000, 2.85]]},
-    {"name": "Royal Mail Tracked 48 Small Parcel (est.)", "dims": [45, 35, 16], "tracked": True, "tiers": [[2000, 3.65]]},
-    {"name": "Royal Mail Tracked 48 Medium Parcel (est.)", "dims": [61, 46, 46], "tracked": True, "tiers": [[2000, 5.55], [10000, 7.35], [20000, 11.85]]},
-    {"name": "Royal Mail Tracked 24 Small Parcel (est.)", "dims": [45, 35, 16], "tracked": True, "tiers": [[2000, 4.65]]},
-    {"name": "Evri ParcelShop drop-off (est.)", "dims": [120, 60, 60], "tracked": True, "tiers": [[1000, 2.94], [2000, 4.37], [5000, 6.59], [10000, 6.68], [15000, 10.28]]},
+    {"name": "Royal Mail Tracked 48 Large Letter (est.)", "etsy": True, "dims": [35.3, 25, 2.5], "tracked": True, "tiers": [[1000, 2.85]]},
+    {"name": "Royal Mail Tracked 48 Small Parcel (est.)", "etsy": True, "dims": [45, 35, 16], "tracked": True, "tiers": [[2000, 3.65]]},
+    {"name": "Royal Mail Tracked 48 Medium Parcel (est.)", "etsy": True, "dims": [61, 46, 46], "tracked": True, "tiers": [[2000, 5.55], [10000, 7.35], [20000, 11.85]]},
+    {"name": "Royal Mail Tracked 24 Small Parcel (est.)", "etsy": True, "dims": [45, 35, 16], "tracked": True, "tiers": [[2000, 4.65]]},
+    {"name": "Royal Mail Tracked 24 Large Letter (est.)", "etsy": True, "dims": [35.3, 25, 2.5], "tracked": True, "tiers": [[1000, 3.80]]},
+    {"name": "Royal Mail Tracked 24 Medium Parcel (est.)", "etsy": True, "dims": [61, 46, 46], "tracked": True, "tiers": [[2000, 6.55], [10000, 8.55], [20000, 13.85]]},
+    {"name": "Evri ParcelShop drop-off (est.)", "etsy": True, "dims": [120, 60, 60], "tracked": True, "tiers": [[1000, 2.94], [2000, 4.37], [5000, 6.59], [10000, 6.68], [15000, 10.28]]},
 ]
 
 
