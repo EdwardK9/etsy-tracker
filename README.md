@@ -5,7 +5,7 @@ Self-hosted tracker for a small Etsy 3D-printing shop: products, print batches a
 Flask + SQLite + vanilla JS. Data lives in `/data/etsy.db` (mount a volume there).
 
 ## Deploy with Portainer
-Stacks → Add stack → Repository → this repo, compose path `docker-compose.yml`. Turn on automatic updates to redeploy on each push. Then open `http://<server>:5055` and set up Bambuddy under Settings.
+Stacks → Add stack → Repository → this repo, compose path `docker-compose.yml`. Turn on automatic updates to redeploy on each push. Then open `http://<server>:5075` and set up Bambuddy under Settings.
 
 ## Run locally
     pip install flask && DB_PATH=./etsy.db python app.py

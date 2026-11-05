@@ -11,5 +11,5 @@ services:
     volumes:
       - /mnt/user/appdata/etsy-tracker/data:/data
     ports:
-      - "5055:5055"
+      - "${ETSY_PORT:-5075}:5055"
     restart: unless-stopped
