@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.19.2"
+VERSION = "0.19.3"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -1484,6 +1484,18 @@ def upload_missing_images(s, lid, pid):
     return n, warnings
 
 
+def colour_code(name, used):
+    """Short SKU suffix: initials for multi-word names (Dark Blue -> DB), first 3 letters for one word (Black -> BLA)."""
+    words = re.findall(r"[A-Za-z0-9]+", name)
+    code = ("".join(w[0] for w in words) if len(words) > 1 else (words[0][:3] if words else "X")).upper()
+    base, n = code, 2
+    while code in used:
+        code = f"{base}{n}"
+        n += 1
+    used.add(code)
+    return code
+
+
 def push_inventory(s, lid, p, qty, readiness):
     """Set price / quantity / variations on the listing. Returns how many variation options were sent."""
     options = [o.strip() for o in (p["l_var_options"] or "").split("|") if o.strip()]
@@ -1496,7 +1508,7 @@ def push_inventory(s, lid, p, qty, readiness):
             off["readiness_state_id"] = int(readiness)
         return off
 
-    products, seen = [], set()
+    products, seen, used_codes = [], set(), set()
     if options and vname:
         for o in options:
             o = re.sub(r"[()]", "", o).strip()[:20]
@@ -1505,7 +1517,7 @@ def push_inventory(s, lid, p, qty, readiness):
             seen.add(o.lower())
             prod = {"property_values": [{"property_id": 513, "property_name": vname, "value_ids": [], "values": [o]}], "offerings": [offering()]}
             if p["sku"]:
-                prod["sku"] = (p["sku"] + "-" + re.sub(r"[^A-Za-z0-9]+", "", o).upper())[:32]
+                prod["sku"] = (p["sku"][:26] + "-" + colour_code(o, used_codes))[:32]
             products.append(prod)
     if not products:
         prod = {"property_values": [], "offerings": [offering()]}
