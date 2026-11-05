@@ -344,7 +344,7 @@ async function editListing(id) {
     <div><label>Stock quantity</label><input id="l_qty" type="number" min="1" value="${p.l_qty || S.listing_quantity || 1}"></div>
     <div class="full"><label>Variation name (e.g. Colour — leave blank for none)</label><input id="l_vname" value="${esc(p.l_var_name || '')}" placeholder="Colour">
       <div id="l_vopts" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
-      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center"><span class="mute" style="font-size:12px">Load colours from:</span><select id="l_vmat" style="width:auto"><option value="all">All filament types</option></select></div>
+      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center"><span class="mute" style="font-size:12px">Load colours from:</span><span id="l_vmat" style="display:flex;gap:10px;flex-wrap:wrap"></span></div>
       <div style="display:flex;gap:6px"><input id="l_vadd" placeholder="Add an option…" style="flex:1"><button class="g" id="l_vaddgo">Add</button><button class="g" id="l_vload">Load my filament colours</button></div>
       <div id="l_vnote" class="mute" style="margin-top:6px;font-size:12px"></div></div>
     <div class="full"><label>Personalisation wording (to paste on Etsy — the API can’t switch it on)</label><textarea id="l_pers" rows="2">${esc(p.l_personalisation || '')}</textarea></div>
@@ -378,9 +378,9 @@ async function editListing(id) {
     if (!vavail.length) toast('No matching spools found in Bambuddy.', true);
   });
   renderVar();
-  $('#l_vload', m).onclick = () => loadColours($('#l_vmat', m).value, true);
-  safe(async () => { const ms = await api('GET', '/api/bambuddy/materials'); const cur = (S.listing_materials || 'PLA').split(',')[0].trim().split(' ')[0].toUpperCase();
-    $('#l_vmat', m).innerHTML = `<option value="all">All filament types</option>` + ms.map(x => `<option value="${esc(x)}" ${x.toUpperCase() === cur ? 'selected' : ''}>${esc(x)} (incl. Matte/Silk etc.)</option>`).join(''); });
+  $('#l_vload', m).onclick = () => { const sel = [...m.querySelectorAll('#l_vmat input:checked')].map(i => i.value); if (!sel.length) return toast('Tick at least one filament type.', true); loadColours(sel.join(','), true); };
+  safe(async () => { const ms = await api('GET', '/api/bambuddy/materials');
+    $('#l_vmat', m).innerHTML = ms.map(x => `<label style="display:flex;align-items:center;gap:5px;margin:0;color:var(--text)"><input type="checkbox" value="${esc(x)}" style="width:auto" ${['PLA', 'PETG'].includes(x.toUpperCase()) ? 'checked' : ''}>${esc(x)}${x.toUpperCase() === 'PLA' ? ' <span class="mute" style="font-size:11px">(incl. Matte, Silk…)</span>' : ''}</label>`).join(''); });
   $('#l_vaddgo', m).onclick = () => { const v = $('#l_vadd', m).value.trim(); if (v) { vsel.add(v); $('#l_vadd', m).value = ''; renderVar(); } };
   $('#l_vadd', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $('#l_vaddgo', m).click(); } };
   const tsel = $('#l_tplsel', m);
