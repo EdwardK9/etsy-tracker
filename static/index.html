@@ -18,6 +18,9 @@ body{margin:0;background:radial-gradient(1200px 500px at 70% -10%,var(--glow),tr
 .theme{margin-top:auto;display:flex;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--line);color:var(--mute);border-radius:10px;padding:8px 12px;cursor:pointer;font:inherit;font-weight:500}
 .theme:hover{color:var(--text);border-color:var(--acc)}
 .theme svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.subtabs{display:flex;gap:4px;margin:0 0 18px;border-bottom:1px solid var(--line)}
+.subtabs a{padding:9px 16px;color:var(--mute);text-decoration:none;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px}
+.subtabs a:hover{color:var(--text)}.subtabs a.on{color:var(--text);border-bottom-color:var(--acc)}
 .sub{font-size:13px;color:var(--mute);margin:0 0 8px}
 .kan{display:grid;grid-template-columns:repeat(4,minmax(220px,1fr));gap:14px;align-items:start;overflow-x:auto}
 .kcol{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px;min-height:120px}
@@ -139,8 +142,15 @@ function toast(msg, bad) {
 }
 async function safe(fn) { try { await fn(); } catch (e) { toast(e.message, true); } }
 
-const TABS = [['dashboard','Dashboard'],['products','Products'],['listings','Listings'],['templates','Templates'],['pricing','Pricing'],['shipping','Shipping'],['history','History'],['stock','Printing & Stock'],['supplies','Supplies'],['filament','Filament'],['orders','Orders'],['sales','Sales'],['expenses','Expenses'],['import','Import'],['settings','Settings']];
-const TITLES = Object.fromEntries(TABS);
+const GROUPS = [
+  ['dashboard', 'Dashboard', [['dashboard', 'Overview'], ['history', 'History']]],
+  ['products', 'Products', [['products', 'Products'], ['listings', 'Listings'], ['templates', 'Templates']]],
+  ['orders', 'Orders', [['orders', 'Board'], ['sales', 'Sales'], ['import', 'Import']]],
+  ['stock', 'Stock', [['stock', 'Printing'], ['filament', 'Filament'], ['supplies', 'Supplies']]],
+  ['pricing', 'Pricing', [['pricing', 'Pricing'], ['shipping', 'Shipping & boxes']]],
+  ['expenses', 'Expenses', [['expenses', 'Expenses']]],
+  ['settings', 'Settings', [['settings', 'Settings']]]];
+const groupOf = k => GROUPS.find(g => g[2].some(x => x[0] === k)) || GROUPS[0];
 const SUN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4l1.4-1.4"/></svg>';
 const MOON = '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>';
 function applyTheme(t) {
@@ -155,7 +165,8 @@ function applyTheme(t) {
 })();
 function nav() {
   const cur = location.hash.slice(1) || 'dashboard';
-  $('#nav').innerHTML = TABS.map(([k, l]) => `<button class="${k === cur ? 'on' : ''}" onclick="location.hash='${k}'">${ic(k)}<span>${l}</span></button>`).join('');
+  const g = groupOf(cur);
+  $('#nav').innerHTML = GROUPS.map(([k, l, subs]) => `<button class="${k === g[0] ? 'on' : ''}" onclick="location.hash='${k === g[0] ? cur : (localStorage.getItem('sub_' + k) || subs[0][0])}'">${ic(k)}<span>${l}</span></button>`).join('');
   return cur;
 }
 async function route() {
@@ -165,6 +176,9 @@ async function route() {
   S = await api('GET', '/api/settings');
   PRODUCTS = await api('GET', '/api/products');
   await safe(() => VIEWS[t]());
+  const g = groupOf(t);
+  try { localStorage.setItem('sub_' + g[0], t); } catch (e) {}
+  if (g[2].length > 1) $('#main').insertAdjacentHTML('afterbegin', `<div class="subtabs">${g[2].map(([k, l]) => `<a href="#${k}" class="${k === t ? 'on' : ''}">${l}</a>`).join('')}</div>`);
 }
 window.addEventListener('hashchange', route);
 
@@ -267,6 +281,7 @@ function editProduct(id) {
     <div><label>Hands-on time per item (min: cleanup, packing)</label><input id="f_lab" type="number" value="${p.labour_minutes || 0}"></div>
     <div><label>Print time per item (min)</label><input id="f_min" type="number" value="${p.print_minutes}"></div>
     <div><label>Low-stock warning at</label><input id="f_re" type="number" value="${p.reorder_at}"></div>
+    <div class="full"><label>Printed item size L × W × H (cm) — lets the Shipping tab suggest a box</label><div style="display:flex;gap:6px"><input id="f_il" type="number" step="0.1" placeholder="L" value="${p.item_l || ''}"><input id="f_iw" type="number" step="0.1" placeholder="W" value="${p.item_w || ''}"><input id="f_ih" type="number" step="0.1" placeholder="H" value="${p.item_h || ''}"></div></div>
     <div class="full"><label>Packaging used per item <span class="mute">(stock in the Supplies tab drops automatically when this sells)</span></label><div id="f_sup"></div>
       <div style="display:flex;gap:6px;margin-top:6px"><select id="f_supsel" style="flex:1"><option value="">Add a supply…</option></select><button class="g" id="f_supadd">Add</button></div></div>
     <div class="full"><label>Notes</label><textarea id="f_notes" rows="2">${esc(p.notes)}</textarea></div>
@@ -305,7 +320,7 @@ function editProduct(id) {
       plate_energy: $('#f_energy', m).value, labour_minutes: $('#f_lab', m).value, print_minutes: $('#f_min', m).value, reorder_at: $('#f_re', m).value, notes: $('#f_notes', m).value, active: $('#f_active', m).checked};
     const saved = await api(id ? 'PUT' : 'POST', id ? `/api/products/${id}` : '/api/products', body);
     const pid = id || (saved && saved.id);
-    if (pid) await api('PUT', `/api/products/${pid}/supplies`, psel);
+    if (pid) { await api('PUT', `/api/products/${pid}/supplies`, psel); await api('POST', `/api/products/${pid}/size`, {item_l: $('#f_il', m).value, item_w: $('#f_iw', m).value, item_h: $('#f_ih', m).value}); }
     m.remove(); route();
   });
   if (id) $('#del', m).onclick = () => { if (confirm('Delete this product?')) safe(async () => { await api('DELETE', `/api/products/${id}`); m.remove(); route(); }); };
@@ -360,6 +375,8 @@ async function editListing(id) {
     <div class="full"><label>Tags (comma separated, up to 13, 20 characters each) <span id="l_gc" class="mute"></span></label><input id="l_tags" value="${esc(p.l_tags)}"></div>
     <div><label>Materials</label><input id="l_mat" value="${esc(p.l_materials || S.listing_materials)}"></div>
     <div><label>Stock quantity</label><input id="l_qty" type="number" min="1" value="${p.l_qty || S.listing_quantity || 1}"></div>
+    <div><label>Shipping profile <span class="mute">(pick a bigger-parcel profile if needed)</span></label><select id="l_ship"><option value="${esc(p.l_ship_profile || '')}">Loading…</option></select></div>
+    <div><label>Processing time</label><select id="l_proc"><option value="${esc(p.l_readiness || '')}">Loading…</option></select></div>
     <div class="full"><label>Variation name (e.g. Colour — leave blank for none)</label><input id="l_vname" value="${esc(p.l_var_name || '')}" placeholder="Colour">
       <div id="l_vopts" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
       <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center"><span class="mute" style="font-size:12px">Load colours from:</span><span id="l_vmat" style="display:flex;gap:10px;flex-wrap:wrap"></span></div>
@@ -373,7 +390,7 @@ async function editListing(id) {
       <div id="l_imgs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"></div>
       <input type="file" id="l_file" accept=".jpg,.jpeg,.png,.gif" multiple></div>
   </div>
-  <p class="mute" style="margin:12px 0 0">Price (${money(p.price)}) and item weight come from the product. Shipping, processing time and who-made come from your Settings defaults.</p>
+  <p class="mute" style="margin:12px 0 0">Price (${money(p.price)}) and item weight come from the product. Who-made comes from your Settings defaults; shipping and processing time use the choices above (or your Settings defaults).</p>
   <div class="bar" style="margin:14px 0 0"><button class="b" id="l_draft">Save &amp; create Etsy draft</button><button class="b alt" id="l_save">Save only</button><button class="g" onclick="this.closest('.modal').remove()">Close</button></div>
   <div id="l_msg" style="margin-top:10px"></div>`);
   const counters = () => { $('#l_tc', m).textContent = `${$('#l_title', m).value.length}/140`; $('#l_gc', m).textContent = `${(($('#l_tags', m).value + ',' + (S.listing_default_tags || '')).split(',').map(x => x.trim()).filter(Boolean).length)}/13 incl. defaults`; };
@@ -450,7 +467,13 @@ async function editListing(id) {
   });
   const save = () => api('PUT', `/api/products/${id}/listing`, {l_title: $('#l_title', m).value, l_desc: $('#l_desc', m).value, l_tags: $('#l_tags', m).value,
     l_materials: $('#l_mat', m).value, l_qty: $('#l_qty', m).value, taxonomy_id: tax.id, taxonomy_name: tax.name,
-    l_var_name: $('#l_vname', m).value, l_var_options: [...vsel].join('|'), l_personalisation: $('#l_pers', m).value});
+    l_var_name: $('#l_vname', m).value, l_var_options: [...vsel].join('|'), l_personalisation: $('#l_pers', m).value,
+    l_ship_profile: $('#l_ship', m).value, l_readiness: $('#l_proc', m).value});
+  const fillProf = async (sel, url, cur, defId) => { try { const L = await api('GET', url); const d = L.find(x => String(x.id) === String(defId));
+    $(sel, m).innerHTML = `<option value="">Default from Settings${d ? ' — ' + esc(d.title) : ''}</option>` + L.map(x => `<option value="${x.id}" ${String(x.id) === String(cur) ? 'selected' : ''}>${esc(x.title)}</option>`).join(''); }
+    catch (e) { $(sel, m).innerHTML = '<option value="">Default from Settings</option>'; } };
+  if (S.etsy_connected) { fillProf('#l_ship', '/api/etsy/shipping-profiles', p.l_ship_profile, S.listing_shipping_profile_id); fillProf('#l_proc', '/api/etsy/processing-profiles', p.l_readiness, S.listing_readiness_state_id); }
+  else { $('#l_ship', m).innerHTML = $('#l_proc', m).innerHTML = '<option value="">Default from Settings</option>'; }
   $('#l_save', m).onclick = () => safe(async () => { await save(); toast('Saved'); route(); });
   $('#l_draft', m).onclick = () => safe(async () => {
     await save(); $('#l_msg', m).innerHTML = '<span class="mute">Creating draft on Etsy…</span>';
@@ -701,11 +724,13 @@ function editSupply(s) {
     <div><label>Supplier lead time (days)</label><input id="u_ld" type="number" value="${e.lead_days || 0}"></div>
     <div><label>Used on every order (e.g. 1 label)</label><input id="u_po" type="number" step="0.1" value="${e.per_order || 0}"></div>
     <div><label>Expected use per week (optional)</label><input id="u_mw" type="number" step="0.5" value="${e.manual_week || 0}"></div>
+    <div class="full"><label>If this is a box/mailer: inner size L × W × H (cm) and empty weight (g) — used to suggest boxes for orders</label>
+      <div style="display:flex;gap:6px"><input id="u_bl" type="number" step="0.1" placeholder="L" value="${e.box_l || ''}"><input id="u_bw" type="number" step="0.1" placeholder="W" value="${e.box_w || ''}"><input id="u_bh" type="number" step="0.1" placeholder="H" value="${e.box_h || ''}"><input id="u_bg" type="number" step="1" placeholder="g" value="${e.box_g || ''}"></div></div>
     <div class="full"><label>Notes</label><input id="u_no" value="${esc(e.notes)}"></div>
     ${s ? `<div><label><input type="checkbox" id="u_a" style="width:auto" ${e.active ? 'checked' : ''}> Active</label></div>` : ''}</div>
   <div class="bar" style="margin-top:14px"><button class="b" id="ok">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span>${s ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
   $('#ok', m).onclick = () => safe(async () => {
-    const body = {name: $('#u_n', m).value, link: $('#u_l', m).value, stock: $('#u_s', m).value, unit_cost: $('#u_c', m).value, lead_days: $('#u_ld', m).value, per_order: $('#u_po', m).value, manual_week: $('#u_mw', m).value, notes: $('#u_no', m).value, active: s ? $('#u_a', m).checked : true};
+    const body = {name: $('#u_n', m).value, link: $('#u_l', m).value, stock: $('#u_s', m).value, unit_cost: $('#u_c', m).value, lead_days: $('#u_ld', m).value, per_order: $('#u_po', m).value, manual_week: $('#u_mw', m).value, notes: $('#u_no', m).value, box_l: $('#u_bl', m).value, box_w: $('#u_bw', m).value, box_h: $('#u_bh', m).value, box_g: $('#u_bg', m).value, active: s ? $('#u_a', m).checked : true};
     await api(s ? 'PUT' : 'POST', s ? `/api/supplies/${s.id}` : '/api/supplies', body); m.remove(); route();
   });
   if (s) $('#del', m).onclick = () => { if (confirm('Delete this supply (and unlink it from products)?')) safe(async () => { await api('DELETE', `/api/supplies/${s.id}`); m.remove(); route(); }); };
@@ -729,16 +754,23 @@ function shipOptions(rates, g, dims) {
     return {...s, fitsSize, tier, price: tier ? tier[1] : null, ok: fitsSize && !!tier};
   });
 }
+const STD_BOXES = [['Generic 15×10×5 cm', 15, 10, 5, 40], ['Generic 20×15×8 cm', 20, 15, 8, 70], ['Generic 25×20×10 cm', 25, 20, 10, 100], ['Generic 30×22×12 cm', 30, 22, 12, 130], ['Generic 35×25×15 cm', 35, 25, 15, 170], ['Generic 40×30×20 cm', 40, 30, 20, 250]];
 async function shipping() {
   let R = await api('GET', '/api/shipping/rates');
+  const SUPS = await api('GET', '/api/supplies'); let basket = [];
   const act = PRODUCTS.filter(p => p.active);
   const sel = localStorage.getItem('shipProd') || '';
   const cur = PRODUCTS.find(p => String(p.id) === sel);
   $('#main').innerHTML = `<div class="top"><h1>Shipping calculator</h1></div>
   <div class="note">Enter the <b>packed</b> parcel (item + packaging). Etsy UK labels are <b>Royal Mail Tracked 24/48</b> and <b>Evri</b>, and Etsy only shows the exact price when you buy the label, so the prices below are estimates until you correct them (bottom of page) or pull your real label charges from Etsy (below). Etsy says it doesn't charge VAT on Royal Mail labels, so Etsy's price may come out lower than Click &amp; Drop's VAT-inclusive prices.
   <label style="margin-top:8px;display:block"><input type="checkbox" id="sh_etsy" style="width:auto" ${localStorage.getItem('shipEtsy') !== '0' ? 'checked' : ''}> Only show services I can buy as Etsy labels</label></div>
+  <div class="card" style="margin-bottom:18px"><h3 class="sub" style="margin-top:0">📦 What's in the parcel? — get a box suggestion</h3>
+    <div id="bx_rows"></div>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap"><select id="bx_add" style="width:auto;min-width:220px"><option value="">Add a product…</option>${act.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+      <span class="mute">packing material (g):</span><input id="bx_pad" type="number" value="30" style="width:80px"></div>
+    <div id="bx_out" style="margin-top:12px"></div></div>
   <div class="card" style="margin-bottom:18px"><div class="grid">
-    <div class="full"><label>Start from a product (loads its saved parcel size)</label><select id="sh_prod"><option value="">— manual —</option>${act.map(p => `<option value="${p.id}" ${String(p.id) === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+    <div class="full"><label>Or enter a parcel by hand — start from a product (loads its saved parcel size)</label><select id="sh_prod"><option value="">— manual —</option>${act.map(p => `<option value="${p.id}" ${String(p.id) === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
     <div><label>Packed weight (g)</label><input id="sh_g" type="number" step="1" value="${cur && cur.pack_g || ''}"></div>
     <div><label>Length × Width × Height (cm)</label><div style="display:flex;gap:6px"><input id="sh_l" type="number" step="0.1" placeholder="L" value="${cur && cur.pack_l || ''}"><input id="sh_w" type="number" step="0.1" placeholder="W" value="${cur && cur.pack_w || ''}"><input id="sh_h" type="number" step="0.1" placeholder="H" value="${cur && cur.pack_h || ''}"></div></div>
   </div></div>
@@ -771,6 +803,36 @@ async function shipping() {
   $('#sh_save').onclick = () => safe(async () => { document.querySelectorAll('[data-r]').forEach(i => { R[+i.dataset.r].tiers[+i.dataset.t][1] = +i.value || 0; }); R = await api('PUT', '/api/shipping/rates', R); toast('Rates saved'); out(); });
   $('#sh_reset').onclick = () => { if (confirm('Reset all shipping rates to the built-in defaults?')) safe(async () => { R = await api('DELETE', '/api/shipping/rates'); renderRates(); out(); toast('Rates reset'); }); };
   out();
+  const boxes = () => {
+    const own = SUPS.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, d: [s.box_l, s.box_w, s.box_h], g: s.box_g || 0, stock: s.remaining, own: true}));
+    return {own, std: STD_BOXES.map(([name, l, w, hh, g]) => ({name, d: [l, w, hh], g, own: false}))};
+  };
+  const renderBox = () => {
+    $('#bx_rows').innerHTML = basket.map((b, i) => { const p = PRODUCTS.find(x => x.id === b.id); return `<div style="display:flex;gap:8px;align-items:center;margin-top:4px"><span style="flex:1">${esc(p.name)}${p.item_l ? ` <span class="mute">${p.item_l}×${p.item_w}×${p.item_h} cm</span>` : ' <span class="bad" style="font-size:12px">no size set — add it in Products → Edit</span>'}</span><span class="mute">qty</span><input data-bq="${i}" type="number" min="1" value="${b.qty}" style="width:70px;padding:5px 8px"><button class="g" data-bx="${i}">✕</button></div>`; }).join('');
+    m_ = document.querySelectorAll('[data-bq]'); m_.forEach(el => el.oninput = () => { basket[+el.dataset.bq].qty = Math.max(1, +el.value || 1); suggestBox(); });
+    document.querySelectorAll('[data-bx]').forEach(el => el.onclick = () => { basket.splice(+el.dataset.bx, 1); renderBox(); suggestBox(); });
+  };
+  let m_;
+  const suggestBox = () => {
+    if (!basket.length) { $('#bx_out').innerHTML = '<div class="mute">Pick the products in the order and I’ll suggest the smallest box that fits, plus the cheapest Etsy label for it.</div>'; return; }
+    const items = basket.map(b => ({p: PRODUCTS.find(x => x.id === b.id), q: b.qty}));
+    if (items.some(i => !(i.p.item_l > 0 && i.p.item_w > 0 && i.p.item_h > 0))) { $('#bx_out').innerHTML = '<div class="note">Add the printed size (L × W × H) for these products in Products → Edit first.</div>'; return; }
+    const vol = items.reduce((t, i) => t + i.q * i.p.item_l * i.p.item_w * i.p.item_h, 0) * 1.3;
+    const itemG = items.reduce((t, i) => t + i.q * (i.p.items_per_plate ? i.p.plate_grams / i.p.items_per_plate : 0), 0), pad = +$('#bx_pad').value || 0;
+    const fits = bx => items.every(i => { const a = [i.p.item_l, i.p.item_w, i.p.item_h].sort((x, y) => y - x), b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]); }) && vol <= bx.d[0] * bx.d[1] * bx.d[2];
+    const {own, std} = boxes();
+    let cands = own.filter(fits); const usingStd = !cands.length; if (usingStd) cands = std.filter(fits);
+    const etsyR = R.filter(s => s.etsy);
+    cands = cands.map(bx => { const g = Math.round(itemG + pad + bx.g), outer = bx.d.map(x => x + 1), o = shipOptions(etsyR, g, outer).filter(x => x.ok).sort((a, b) => a.price - b.price)[0]; return {...bx, g, outer, best: o}; })
+      .sort((a, b) => ((a.best ? a.best.price : 99) - (b.best ? b.best.price : 99)) || (a.d[0] * a.d[1] * a.d[2] - b.d[0] * b.d[1] * b.d[2])).slice(0, 4);
+    $('#bx_out').innerHTML = cands.length ? `<div class="wrap"><table><tr><th>Suggested box</th><th>Inner size</th><th class="r">Parcel weight</th><th>Cheapest Etsy label</th><th></th></tr>${cands.map((c, i) => `<tr><td>${esc(c.name)}${i === 0 ? ' <span class="pill">best</span>' : ''}${c.own ? (c.stock <= 0 ? ' <span class="bad" style="font-size:12px">(out of stock)</span>' : ` <span class="mute" style="font-size:12px">(${+c.stock.toFixed(0)} in stock)</span>`) : ''}</td><td>${c.d.join(' × ')} cm</td><td class="r">${c.g}g</td><td>${c.best ? `${esc(c.best.name.replace(' (est.)', ''))} — <b>${money(c.best.price)}</b>` : '<span class="mute">no service fits</span>'}</td>
+      <td class="r"><button class="g" data-use="${i}">Use this parcel</button></td></tr>`).join('')}</table></div>${usingStd ? '<p class="mute">None of your own boxes fit (or none are set up yet), so these are generic sizes. Add your real boxes in Stock → Supplies (with their inner size) and I’ll suggest those instead.</p>' : ''}`
+      : '<div class="note">Nothing in the box list is big enough — try splitting into two parcels or add a larger box in Supplies.</div>';
+    document.querySelectorAll('[data-use]').forEach(el => el.onclick = () => { const c = cands[+el.dataset.use]; $('#sh_g').value = c.g; [$('#sh_l'), $('#sh_w'), $('#sh_h')].forEach((inp, k) => inp.value = c.outer[k]); out(); toast('Parcel loaded below'); });
+  };
+  $('#bx_add').onchange = e => { const id = +e.target.value; if (id) { const ex = basket.find(b => b.id === id); ex ? ex.qty++ : basket.push({id, qty: 1}); e.target.value = ''; renderBox(); suggestBox(); } };
+  $('#bx_pad').oninput = suggestBox;
+  renderBox(); suggestBox();
   if ($('#sh_chk')) $('#sh_chk').onclick = () => safe(async () => {
     $('#sh_lab').innerHTML = '<div class="mute">Checking…</div>';
     const r = await api('GET', '/api/etsy/label-costs'); const f = r.found;

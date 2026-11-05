@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.16.0"
+VERSION = "0.18.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -181,6 +181,8 @@ PRODUCT_MIGRATIONS = [
     ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
     ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
     ("plate_energy", "REAL DEFAULT 0"), ("labour_minutes", "INTEGER DEFAULT 0"),
+    ("l_ship_profile", "TEXT DEFAULT ''"), ("l_readiness", "TEXT DEFAULT ''"),
+    ("item_l", "REAL DEFAULT 0"), ("item_w", "REAL DEFAULT 0"), ("item_h", "REAL DEFAULT 0"),
     ("pack_g", "REAL DEFAULT 0"), ("pack_l", "REAL DEFAULT 0"), ("pack_w", "REAL DEFAULT 0"), ("pack_h", "REAL DEFAULT 0"),
     ("postage_cost", "REAL DEFAULT 0"),
     ("etsy_state", "TEXT DEFAULT ''"), ("etsy_views", "INTEGER DEFAULT 0"), ("etsy_favs", "INTEGER DEFAULT 0"),
@@ -267,6 +269,10 @@ def init_db():
     for col, decl in SALE_MIGRATIONS:
         if col not in have_s:
             con.execute(f"ALTER TABLE sales ADD COLUMN {col} {decl}")
+    have_sup = {r[1] for r in con.execute("PRAGMA table_info(supplies)")}
+    for col in ("box_l", "box_w", "box_h", "box_g"):
+        if col not in have_sup:
+            con.execute(f"ALTER TABLE supplies ADD COLUMN {col} REAL DEFAULT 0")
     have_t = {r[1] for r in con.execute("PRAGMA table_info(listing_templates)")}
     for col, decl in TEMPLATE_MIGRATIONS:
         if col not in have_t:
@@ -1318,10 +1324,11 @@ def api_listing_save(pid):
     if not p:
         return jsonify({"error": "not found"}), 404
     db().execute("""UPDATE products SET l_title=?,l_desc=?,l_tags=?,l_materials=?,l_qty=?,taxonomy_id=?,taxonomy_name=?,
-                    l_var_name=?,l_var_options=?,l_personalisation=? WHERE id=?""",
+                    l_var_name=?,l_var_options=?,l_personalisation=?,l_ship_profile=?,l_readiness=? WHERE id=?""",
                  (d.get("l_title", "")[:140], d.get("l_desc", ""), d.get("l_tags", ""), d.get("l_materials", ""),
                   int(num(d.get("l_qty"))), d.get("taxonomy_id") or None, d.get("taxonomy_name", ""),
-                  d.get("l_var_name", ""), d.get("l_var_options", ""), d.get("l_personalisation", ""), pid))
+                  d.get("l_var_name", ""), d.get("l_var_options", ""), d.get("l_personalisation", ""),
+                  str(d.get("l_ship_profile") or ""), str(d.get("l_readiness") or ""), pid))
     db().commit()
     return jsonify({"ok": True})
 
@@ -1402,8 +1409,10 @@ def api_etsy_draft(pid):
         problems.append("choose a category")
     if num(p["price"]) <= 0:
         problems.append("set a price on the product")
-    if not s.get("listing_shipping_profile_id"):
-        problems.append("choose a default shipping profile in Settings")
+    ship_profile = p["l_ship_profile"] or s.get("listing_shipping_profile_id")
+    readiness = p["l_readiness"] or s.get("listing_readiness_state_id")
+    if not ship_profile:
+        problems.append("choose a shipping profile (here, or a default in Settings)")
     if problems:
         return jsonify({"error": "Before creating the draft: " + ", ".join(problems) + "."}), 400
     title = (p["l_title"] or p["name"]).strip()[:140]
@@ -1413,10 +1422,10 @@ def api_etsy_draft(pid):
     qty = int(p["l_qty"] or num(s.get("listing_quantity"), 1)) or 1
     form = {"quantity": qty, "title": title, "description": desc, "price": f"{p['price']:.2f}",
             "who_made": s.get("listing_who_made") or "i_did", "when_made": s.get("listing_when_made") or "made_to_order",
-            "taxonomy_id": p["taxonomy_id"], "shipping_profile_id": s["listing_shipping_profile_id"],
+            "taxonomy_id": p["taxonomy_id"], "shipping_profile_id": ship_profile,
             "type": "physical", "is_supply": "false", "should_auto_renew": "false"}
-    if s.get("listing_readiness_state_id"):
-        form["readiness_state_id"] = s["listing_readiness_state_id"]
+    if readiness:
+        form["readiness_state_id"] = readiness
     if tags:
         form["tags"] = ",".join(tags)
     if mats:
@@ -1462,8 +1471,8 @@ def push_variations(s, lid, p, options, qty):
             continue
         seen.add(o.lower())
         off = {"price": round(float(p["price"]), 2), "quantity": qty, "is_enabled": True}
-        if s.get("listing_readiness_state_id"):
-            off["readiness_state_id"] = int(s["listing_readiness_state_id"])
+        if readiness:
+            off["readiness_state_id"] = int(readiness)
         prod = {"property_values": [{"property_id": 513, "property_name": vname, "value_ids": [], "values": [o]}], "offerings": [off]}
         if p["sku"]:
             prod["sku"] = (p["sku"] + "-" + re.sub(r"[^A-Za-z0-9]+", "", o).upper())[:32]
@@ -1770,6 +1779,14 @@ def api_ship_rates():
     return jsonify(ship_rates())
 
 
+@app.route("/api/products/<int:pid>/size", methods=["POST"])
+def api_product_size(pid):
+    d = request.get_json(force=True)
+    db().execute("UPDATE products SET item_l=?,item_w=?,item_h=? WHERE id=?", (num(d.get("item_l")), num(d.get("item_w")), num(d.get("item_h")), pid))
+    db().commit()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/products/<int:pid>/shipping", methods=["POST"])
 def api_product_shipping(pid):
     d = request.get_json(force=True)
@@ -1828,10 +1845,11 @@ def api_supplies():
         if not (d.get("name") or "").strip():
             return jsonify({"error": "Give it a name."}), 400
         mx = one("SELECT COALESCE(MAX(id),0) AS m FROM sales")["m"]
-        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes,box_l,box_w,box_h,box_g)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (d["name"].strip(), d.get("link", ""), num(d.get("unit_cost")), num(d.get("stock")), mx, today(),
-                      int(num(d.get("lead_days"))), num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", "")))
+                      int(num(d.get("lead_days"))), num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""),
+                      num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g"))))
         db().commit()
         return jsonify({"ok": True})
     return jsonify(supply_rows())
@@ -1845,9 +1863,10 @@ def api_supply(sid):
         db().commit()
         return jsonify({"ok": True})
     d = request.get_json(force=True)
-    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=? WHERE id=?""",
+    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=?,box_l=?,box_w=?,box_h=?,box_g=? WHERE id=?""",
                  (d.get("name", "").strip(), d.get("link", ""), num(d.get("unit_cost")), int(num(d.get("lead_days"))),
-                  num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""), 1 if d.get("active", True) else 0, sid))
+                  num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""), 1 if d.get("active", True) else 0,
+                  num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g")), sid))
     if d.get("stock") not in (None, ""):
         cur = next((r for r in supply_rows() if r["id"] == sid), None)
         if cur and abs(cur["remaining"] - num(d["stock"])) > 1e-9:
