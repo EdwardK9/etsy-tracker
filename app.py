@@ -286,7 +286,7 @@ def bb_get(path, params=None):
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        raise BBError(f"Bambuddy returned HTTP {e.code} for {path}")
+        raise BBError(f"Bambuddy returned HTTP {e.code} for {url.split('?')[0]} - check the URL is Bambuddy's own address/port (e.g. http://192.168.1.6:8000) and the API key is valid.")
     except Exception as e:
         raise BBError(f"Could not reach Bambuddy: {e}")
 
