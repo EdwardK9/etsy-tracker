@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.24.0"
+VERSION = "0.24.1"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -313,6 +313,10 @@ def init_db():
     for col in ("box_l", "box_w", "box_h", "box_g"):
         if col not in have_sup:
             con.execute(f"ALTER TABLE supplies ADD COLUMN {col} REAL DEFAULT 0")
+    if "pack_size" not in have_sup:
+        con.execute("ALTER TABLE supplies ADD COLUMN pack_size REAL DEFAULT 1")
+    if "pack_name" not in have_sup:
+        con.execute("ALTER TABLE supplies ADD COLUMN pack_name TEXT DEFAULT ''")
     have_t = {r[1] for r in con.execute("PRAGMA table_info(listing_templates)")}
     for col, decl in TEMPLATE_MIGRATIONS:
         if col not in have_t:
@@ -2018,11 +2022,12 @@ def api_supplies():
         if not (d.get("name") or "").strip():
             return jsonify({"error": "Give it a name."}), 400
         mx = one("SELECT COALESCE(MAX(id),0) AS m FROM sales")["m"]
-        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes,box_l,box_w,box_h,box_g)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes,box_l,box_w,box_h,box_g,pack_size,pack_name)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (d["name"].strip(), d.get("link", ""), num(d.get("unit_cost")), num(d.get("stock")), mx, today(),
                       int(num(d.get("lead_days"))), num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""),
-                      num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g"))))
+                      num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g")),
+                      max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip()))
         db().commit()
         return jsonify({"ok": True})
     return jsonify(supply_rows())
@@ -2036,10 +2041,11 @@ def api_supply(sid):
         db().commit()
         return jsonify({"ok": True})
     d = request.get_json(force=True)
-    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=?,box_l=?,box_w=?,box_h=?,box_g=? WHERE id=?""",
+    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=?,box_l=?,box_w=?,box_h=?,box_g=?,pack_size=?,pack_name=? WHERE id=?""",
                  (d.get("name", "").strip(), d.get("link", ""), num(d.get("unit_cost")), int(num(d.get("lead_days"))),
                   num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""), 1 if d.get("active", True) else 0,
-                  num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g")), sid))
+                  num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g")),
+                  max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip(), sid))
     if d.get("stock") not in (None, ""):
         cur = next((r for r in supply_rows() if r["id"] == sid), None)
         if cur and abs(cur["remaining"] - num(d["stock"])) > 1e-9:
@@ -2082,24 +2088,30 @@ def api_supplies_receive():
     cur = {r["id"]: r for r in supply_rows()}
     names = []
     for l in lines:
-        qty, cost = num(l.get("qty")), num(l.get("cost"))
+        packs, cost = num(l.get("qty")), num(l.get("cost"))
         sid = l.get("supply_id")
         if sid and int(sid) in cur:
             sid = int(sid)
+            per = max(num(cur[sid].get("pack_size"), 1), 1)
+            qty = packs * per
             new = max(cur[sid]["remaining"], 0) + qty
             nm = cur[sid]["name"]
+            word = cur[sid].get("pack_name") or "pack"
         else:
             nm = (l.get("name") or "").strip()
             if not nm:
                 continue
-            sid = db().execute("INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at) VALUES(?,?,?,?,?,?)",
-                               (nm, (l.get("link") or "").strip(), 0, 0, mx, today())).lastrowid
+            per = max(num(l.get("pack_size"), 1), 1)
+            qty = packs * per
+            word = "pack"
+            sid = db().execute("INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,pack_size) VALUES(?,?,?,?,?,?,?)",
+                               (nm, (l.get("link") or "").strip(), 0, 0, mx, today(), per)).lastrowid
             new = qty
         db().execute("UPDATE supplies SET stock=?, counted_sale_id=?, counted_at=? WHERE id=?", (new, mx, today(), sid))
         if cost > 0:
             landed = cost + (delivery * cost / goods if goods > 0 else 0)  # share delivery across lines by value
             db().execute("UPDATE supplies SET unit_cost=? WHERE id=?", (round(landed / qty, 4), sid))
-        names.append("%s x%g" % (nm, qty))
+        names.append("%s x%g" % (nm, packs) + (" %s (%g)" % (word, qty) if per > 1 else ""))
     total = round(goods + delivery, 2)
     if total > 0:
         desc = (d.get("note") or "").strip()
