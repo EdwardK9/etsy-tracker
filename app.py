@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.24.1"
+VERSION = "0.25.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -315,6 +315,10 @@ def init_db():
             con.execute(f"ALTER TABLE supplies ADD COLUMN {col} REAL DEFAULT 0")
     if "pack_size" not in have_sup:
         con.execute("ALTER TABLE supplies ADD COLUMN pack_size REAL DEFAULT 1")
+    if "unit" not in have_sup:
+        con.execute("ALTER TABLE supplies ADD COLUMN unit TEXT DEFAULT ''")
+    if "roll_width" not in have_sup:
+        con.execute("ALTER TABLE supplies ADD COLUMN roll_width REAL DEFAULT 0")
     if "pack_name" not in have_sup:
         con.execute("ALTER TABLE supplies ADD COLUMN pack_name TEXT DEFAULT ''")
     have_t = {r[1] for r in con.execute("PRAGMA table_info(listing_templates)")}
@@ -2022,12 +2026,13 @@ def api_supplies():
         if not (d.get("name") or "").strip():
             return jsonify({"error": "Give it a name."}), 400
         mx = one("SELECT COALESCE(MAX(id),0) AS m FROM sales")["m"]
-        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes,box_l,box_w,box_h,box_g,pack_size,pack_name)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes,box_l,box_w,box_h,box_g,pack_size,pack_name,unit,roll_width)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (d["name"].strip(), d.get("link", ""), num(d.get("unit_cost")), num(d.get("stock")), mx, today(),
                       int(num(d.get("lead_days"))), num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""),
                       num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g")),
-                      max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip()))
+                      max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip(),
+                      (d.get("unit") or "").strip(), num(d.get("roll_width"))))
         db().commit()
         return jsonify({"ok": True})
     return jsonify(supply_rows())
@@ -2041,11 +2046,11 @@ def api_supply(sid):
         db().commit()
         return jsonify({"ok": True})
     d = request.get_json(force=True)
-    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=?,box_l=?,box_w=?,box_h=?,box_g=?,pack_size=?,pack_name=? WHERE id=?""",
+    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=?,box_l=?,box_w=?,box_h=?,box_g=?,pack_size=?,pack_name=?,unit=?,roll_width=? WHERE id=?""",
                  (d.get("name", "").strip(), d.get("link", ""), num(d.get("unit_cost")), int(num(d.get("lead_days"))),
                   num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""), 1 if d.get("active", True) else 0,
                   num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g")),
-                  max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip(), sid))
+                  max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip(), (d.get("unit") or "").strip(), num(d.get("roll_width")), sid))
     if d.get("stock") not in (None, ""):
         cur = next((r for r in supply_rows() if r["id"] == sid), None)
         if cur and abs(cur["remaining"] - num(d["stock"])) > 1e-9:

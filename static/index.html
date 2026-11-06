@@ -301,7 +301,14 @@ function editProduct(id) {
   let arch = {id: p.archive_id, name: p.archive_name};
   let SUP = [], psel = [];
   const renderSup = () => {
-    $('#f_sup', m).innerHTML = psel.map((r, i) => { const s = SUP.find(x => x.id === r.supply_id); return `<div style="display:flex;gap:8px;align-items:center;margin-top:4px"><span style="flex:1">${esc(s ? s.name : '?')}</span><input data-q="${i}" type="number" step="0.1" value="${r.qty}" style="width:80px;padding:5px 8px"><span class="mute">per item</span><button class="g" data-x="${i}">✕</button></div>`; }).join('');
+    $('#f_sup', m).innerHTML = psel.map((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}; const roll = s.unit === 'cm';
+      return `<div style="margin-top:6px"><div style="display:flex;gap:8px;align-items:center"><span style="flex:1">${esc(s.name || '?')}</span><input data-q="${i}" type="number" step="0.1" value="${r.qty}" style="width:80px;padding:5px 8px"><span class="mute">${roll ? 'cm of roll' : 'per item'}</span><button class="g" data-x="${i}">✕</button></div>
+      ${roll ? `<div class="mute" style="font-size:12px;margin-top:3px;display:flex;gap:6px;align-items:center">Piece size: <input data-pl="${i}" type="number" placeholder="length" style="width:70px;padding:4px 6px"> × <input data-pw="${i}" type="number" placeholder="${s.roll_width ? 'width (blank = ' + s.roll_width + ')' : 'width'}" style="width:110px;padding:4px 6px"> cm → fills the amount above</div>` : ''}</div>`; }).join('');
+    m.querySelectorAll('[data-pl],[data-pw]').forEach(el => el.oninput = () => {
+      const i = +(el.dataset.pl ?? el.dataset.pw), s = SUP.find(x => x.id === psel[i].supply_id) || {}, row = el.closest('div').parentNode;
+      const L = +row.querySelector('[data-pl]').value || 0, W = +row.querySelector('[data-pw]').value || s.roll_width || 0;
+      if (L) { psel[i].qty = +(s.roll_width && W ? L * W / s.roll_width : L).toFixed(2); row.querySelector('[data-q]').value = psel[i].qty; }
+    });
     m.querySelectorAll('[data-q]').forEach(el => el.oninput = () => psel[+el.dataset.q].qty = +el.value);
     m.querySelectorAll('[data-x]').forEach(el => el.onclick = () => { psel.splice(+el.dataset.x, 1); renderSup(); });
     $('#f_supsel', m).innerHTML = '<option value="">Add a supply…</option>' + SUP.filter(s => s.active && !psel.some(r => r.supply_id === s.id)).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
@@ -855,11 +862,12 @@ async function supplies() {
   ${need.length ? `<div class="note" style="border-color:var(--bad)"><b>Order now:</b> ${need.map(x => esc(x.name)).join(', ')}</div>` : ''}
   <div class="wrap"><table><tr><th>Item</th><th class="r">In stock</th><th class="r">Use / day</th><th class="r">Days left</th><th class="r">Lead time</th><th>Reorder by</th><th></th></tr>
   ${L.map(s => { const [lab, c] = SUP_ST[s.status]; return `<tr style="${s.active ? '' : 'opacity:.5'}"><td>${s.link ? `<a href="${esc(s.link)}" target="_blank" rel="noopener" style="color:var(--text)">${esc(s.name)} ↗</a>` : esc(s.name)}${s.notes ? `<div class="mute" style="font-size:12px">${esc(s.notes)}</div>` : ''}</td>
-    <td class="r ${s.remaining <= 0 ? 'bad' : ''}"><b>${+s.remaining.toFixed(1)}</b></td><td class="r">${s.rate_per_day ? s.rate_per_day.toFixed(2) : '—'}</td><td class="r">${s.days_left === null ? '—' : s.days_left}</td>
+    <td class="r ${s.remaining <= 0 ? 'bad' : ''}"><b>${qtyFmt(s, s.remaining)}</b></td><td class="r">${s.rate_per_day ? s.rate_per_day.toFixed(2) : '—'}</td><td class="r">${s.days_left === null ? '—' : s.days_left}</td>
     <td class="r">${s.lead_days ? s.lead_days + 'd' : '—'}</td><td>${s.reorder_by ? `${s.reorder_by} <span class="st ${c === 'good' ? 'shipped' : ''}">${lab}</span>` : (s.status === 'order_now' ? '<span class="st">Order now</span>' : '<span class="mute">no usage yet</span>')}</td>
     <td class="r"><button class="g" onclick='restockSupply(${s.id}, ${JSON.stringify(s.name).replace(/'/g, "&#39;")})'>Restock</button> <button class="g" onclick='editSupply(${JSON.stringify(s).replace(/'/g, "&#39;")})'>Edit</button></td></tr>`; }).join('') || '<tr><td colspan=7 class="mute">Nothing yet — add your packaging boxes, mailers and so on.</td></tr>'}
   </table></div>`;
 }
+const qtyFmt = (s, v) => s.unit === 'cm' ? (+(v / 100).toFixed(2)) + ' m' : +(+v).toFixed(1);
 function receiveOrder() {
   api('GET', '/api/supplies').then(L => {
     L = L.filter(x => x.active).sort((a, b) => (a.status === 'order_now' ? 0 : 1) - (b.status === 'order_now' ? 0 : 1) || a.name.localeCompare(b.name));
@@ -869,7 +877,7 @@ function receiveOrder() {
     <div><label>Delivery / postage paid (£, optional)</label><input id="ro_del" type="number" step="0.01"></div>
     <div class="full"><label>Label for the expense (optional — e.g. supplier name)</label><input id="ro_note" placeholder="Supplier / order ref"></div></div>
     <div style="max-height:46vh;overflow:auto"><table style="width:100%"><tr><th>Item</th><th class="r">Have</th><th style="width:120px">Qty in</th><th style="width:120px">Total £</th></tr>
-    ${L.map(s => `<tr data-sid="${s.id}" data-uc="${(s.unit_cost || 0) * (s.pack_size || 1)}" data-ps="${s.pack_size || 1}"><td>${esc(s.name)}${s.status === 'order_now' ? ' <span class="st">Order now</span>' : ''}${(s.pack_size || 1) > 1 ? `<div class="mute" style="font-size:11px">Qty = ${esc(s.pack_name || 'packs')} of ${s.pack_size}</div>` : ''}</td><td class="r">${+s.remaining.toFixed(1)}</td><td><input class="rq" type="number" step="1" min="0"></td><td><input class="rc" type="number" step="0.01" placeholder="${s.unit_cost ? '≈£' + (+s.unit_cost * (s.pack_size || 1)).toFixed(2) : ''}"></td></tr>`).join('')}
+    ${L.map(s => `<tr data-sid="${s.id}" data-uc="${(s.unit_cost || 0) * (s.pack_size || 1)}" data-ps="${s.pack_size || 1}"><td>${esc(s.name)}${s.status === 'order_now' ? ' <span class="st">Order now</span>' : ''}${(s.pack_size || 1) > 1 ? `<div class="mute" style="font-size:11px">Qty = ${esc(s.pack_name || 'packs')} of ${s.unit === 'cm' ? (s.pack_size / 100) + ' m' + (s.roll_width ? ' × ' + s.roll_width + ' cm wide' : '') : s.pack_size}</div>` : ''}</td><td class="r">${qtyFmt(s, s.remaining)}</td><td><input class="rq" type="number" step="1" min="0"></td><td><input class="rc" type="number" step="0.01" placeholder="${s.unit_cost ? '≈£' + (+s.unit_cost * (s.pack_size || 1)).toFixed(2) : ''}"></td></tr>`).join('')}
     </table><div id="ro_new"></div><button class="g" id="ro_add" style="margin-top:8px">+ Something new (not in the list)</button></div>
     <div class="bar" style="margin-top:14px"><button class="b" id="ro_ok">Save order</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span><span class="mute" id="ro_tot"></span></div>`);
     const tot = () => {
@@ -901,8 +909,12 @@ function editSupply(s) {
     <div><label>${s ? 'Stock count now' : 'Stock you have now'}</label><input id="u_s" type="number" step="1" value="${e.remaining}"></div>
     <div><label>Cost each (£)</label><input id="u_c" type="number" step="0.01" value="${e.unit_cost || ''}"></div>
     <div><label>Supplier lead time (days)</label><input id="u_ld" type="number" value="${e.lead_days || 0}"></div>
-    <div><label>It comes as a roll/pack of… (how many units)</label><input id="u_ps" type="number" step="1" min="1" value="${e.pack_size || 1}" placeholder="e.g. 500 labels per roll"></div>
-    <div><label>What do you call a pack?</label><input id="u_pn" value="${esc(e.pack_name || '')}" placeholder="roll / pack / box"></div>
+    <div class="full"><label>How is it counted?</label><select id="u_mode"><option value="each" ${e.unit !== 'cm' ? 'selected' : ''}>Individual items (boxes, labels, mailers…) — may come in rolls/packs</option><option value="cm" ${e.unit === 'cm' ? 'selected' : ''}>By length off a roll (packing paper, tape, bubble wrap…)</option></select></div>
+    <div id="u_each" ${e.unit === 'cm' ? 'style="display:none"' : ''} class="full"><div class="grid"><div><label>It comes as a roll/pack of… (units)</label><input id="u_ps" type="number" step="1" min="1" value="${e.unit === 'cm' ? 1 : (e.pack_size || 1)}" placeholder="e.g. 500 labels per roll"></div>
+      <div><label>What do you call a pack?</label><input id="u_pn" value="${esc(e.pack_name || '')}" placeholder="roll / pack / box"></div></div></div>
+    <div id="u_roll" ${e.unit === 'cm' ? '' : 'style="display:none"'} class="full"><div class="grid"><div><label>Roll length (metres)</label><input id="u_rl" type="number" step="0.1" value="${e.unit === 'cm' ? (e.pack_size || 0) / 100 : ''}" placeholder="e.g. 50"></div>
+      <div><label>Roll width (cm)</label><input id="u_rw" type="number" step="0.1" value="${e.roll_width || ''}" placeholder="e.g. 50"></div>
+      <div class="full mute" style="font-size:12px">Stock is tracked in cm of roll. On each product you enter the size of the piece you use (e.g. 60 × 40 cm) and it works out how much of the roll that takes. “Cost each” below = cost per <b>cm</b> of roll — it fills itself when you log an arrived order.</div></div></div>
     <div><label>Used on every order (e.g. 1 label)</label><input id="u_po" type="number" step="0.1" value="${e.per_order || 0}"></div>
     <div><label>Expected use per week (optional)</label><input id="u_mw" type="number" step="0.5" value="${e.manual_week || 0}"></div>
     <div class="full"><label>If this is a box/mailer: inner size L × W × H (cm) and empty weight (g) — used to suggest boxes for orders</label>
@@ -910,8 +922,10 @@ function editSupply(s) {
     <div class="full"><label>Notes</label><input id="u_no" value="${esc(e.notes)}"></div>
     ${s ? `<div><label><input type="checkbox" id="u_a" style="width:auto" ${e.active ? 'checked' : ''}> Active</label></div>` : ''}</div>
   <div class="bar" style="margin-top:14px"><button class="b" id="ok">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span>${s ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
+  $('#u_mode', m).onchange = () => { const r = $('#u_mode', m).value === 'cm'; $('#u_each', m).style.display = r ? 'none' : ''; $('#u_roll', m).style.display = r ? '' : 'none'; };
   $('#ok', m).onclick = () => safe(async () => {
-    const body = {pack_size: $('#u_ps', m).value, pack_name: $('#u_pn', m).value, name: $('#u_n', m).value, link: $('#u_l', m).value, stock: $('#u_s', m).value, unit_cost: $('#u_c', m).value, lead_days: $('#u_ld', m).value, per_order: $('#u_po', m).value, manual_week: $('#u_mw', m).value, notes: $('#u_no', m).value, box_l: $('#u_bl', m).value, box_w: $('#u_bw', m).value, box_h: $('#u_bh', m).value, box_g: $('#u_bg', m).value, active: s ? $('#u_a', m).checked : true};
+    const roll = $('#u_mode', m).value === 'cm';
+    const body = {unit: roll ? 'cm' : '', roll_width: roll ? $('#u_rw', m).value : 0, pack_size: roll ? (+$('#u_rl', m).value || 0) * 100 : $('#u_ps', m).value, pack_name: roll ? 'roll' : $('#u_pn', m).value, name: $('#u_n', m).value, link: $('#u_l', m).value, stock: $('#u_s', m).value, unit_cost: $('#u_c', m).value, lead_days: $('#u_ld', m).value, per_order: $('#u_po', m).value, manual_week: $('#u_mw', m).value, notes: $('#u_no', m).value, box_l: $('#u_bl', m).value, box_w: $('#u_bw', m).value, box_h: $('#u_bh', m).value, box_g: $('#u_bg', m).value, active: s ? $('#u_a', m).checked : true};
     await api(s ? 'PUT' : 'POST', s ? `/api/supplies/${s.id}` : '/api/supplies', body); m.remove(); route();
   });
   if (s) $('#del', m).onclick = () => { if (confirm('Delete this supply (and unlink it from products)?')) safe(async () => { await api('DELETE', `/api/supplies/${s.id}`); m.remove(); route(); }); };
