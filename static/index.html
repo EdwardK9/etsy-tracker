@@ -656,7 +656,7 @@ function measDetail() {
     <button class="g" type="button" id="m_add">+ Add row</button>
     <div style="margin-top:14px"><label>Notes</label><textarea id="m_notes" rows="3">${esc(m.notes)}</textarea></div>
     <div style="margin-top:14px"><label>Photos</label><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">${(m.photos || []).map(id => `<span style="position:relative"><a href="/api/measure-photos/${id}/file" target="_blank"><img src="/api/measure-photos/${id}/file" loading="lazy" style="width:96px;height:96px;object-fit:cover;border-radius:9px;border:1px solid var(--line)"></a><a data-dp="${id}" style="position:absolute;top:-6px;right:-6px;cursor:pointer;background:var(--bad);color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;font-size:12px;line-height:18px">×</a></span>`).join('') || '<span class="mute" style="font-size:12px">No photos yet</span>'}</div>
-      <label class="b alt" style="cursor:pointer;margin:0;display:inline-block">+ Add photos<input type="file" id="m_up" multiple accept="image/*" hidden></label></div>
+      <label class="b alt" style="cursor:pointer;margin:0;display:inline-block">+ Add photos<input type="file" id="m_up" multiple accept=".jpg,.jpeg,.png,.webp,.gif,.heic,.heif" hidden></label></div>
     <div class="bar" style="margin:14px 0 0"><button class="g" id="m_next">Next item →</button><a class="b alt" href="/api/measurements/${m.id}/pdf">Export PDF</a><span class="sp"></span><button class="g" id="m_dup">Duplicate</button><button class="g" id="m_del">Delete</button></div></div>`;
   let t;
   const save = () => {

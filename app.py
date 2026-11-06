@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.28.0"
+VERSION = "0.28.1"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -2337,6 +2337,11 @@ def _autosync_loop():
 @app.route("/api/measurements/<int:iid>/photos", methods=["POST"])
 def api_measure_photos_add(iid):
     from PIL import Image, ImageOps
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
     os.makedirs(MPHOTO_DIR, exist_ok=True)
     n, bad = 0, []
     for f in request.files.getlist("files"):
