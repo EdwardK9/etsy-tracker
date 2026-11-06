@@ -78,7 +78,9 @@ label{display:block;font-size:12px;color:var(--mute);margin-bottom:5px;font-weig
 .modal>div{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;width:100%;max-width:580px;box-shadow:0 30px 80px #000a;animation:pop .15s ease-out}
 @keyframes pop{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
 .modal h2{font-size:18px;text-transform:none;color:var(--text);letter-spacing:-.2px;margin:0 0 14px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:end}
+th.srt{cursor:pointer;user-select:none}th.srt:hover{color:var(--text)}th.srt::after{content:' ↕';opacity:.35}th.asc::after{content:' ▲';opacity:1;color:var(--acc)}th.desc::after{content:' ▼';opacity:1;color:var(--acc)}
+.tbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 8px}.tbar input[type=search],.tbar select{width:auto;min-width:180px;padding:7px 10px}.tbar label{display:flex;gap:6px;align-items:center;margin:0;font-size:12px;color:var(--mute)}
 .grid .full{grid-column:1/-1}
 .pill{font-size:11px;padding:3px 9px;border-radius:20px;background:#34d3991a;color:var(--good);font-weight:600}
 .pick{border:1px solid var(--line);background:var(--card2);border-radius:10px;padding:9px 12px;margin-top:6px;cursor:pointer;transition:.15s}
@@ -175,6 +177,49 @@ function nav() {
   $('#subbar').innerHTML = g[2].length > 1 ? `<div class="subtabs">${g[2].map(([k, l]) => `<a href="#${k}" class="${k === cur ? 'on' : ''}">${l}</a>`).join('')}</div>` : '';
   return cur;
 }
+/* ---------------- sortable + filterable tables ---------------- */
+const TS = {};
+function enhanceTables(view) {
+  document.querySelectorAll('#main table').forEach((tbl, ti) => {
+    if (tbl.closest('.print-only') || tbl.classList.contains('nosort')) return;
+    const head = [...tbl.rows].find(r => r.querySelector('th')); if (!head) return;
+    const ths = [...head.cells]; const body = () => [...tbl.rows].filter(r => r !== head && r.querySelector('td'));
+    const rowsAll = body(); if (rowsAll.length < 2 || rowsAll.some(r => r.cells.length === 1)) return;
+    const key = view + ':' + ti, st = TS[key] = TS[key] || {col: -1, dir: 1, q: '', month: '', hide: false};
+    const val = c => (c ? c.textContent : '').trim();
+    const num = s => { const m = s.replace(/[£$€,\s]/g, '').match(/^[-−+]?\d*\.?\d+/); return m ? parseFloat(m[0].replace('−', '-')) : NaN; };
+    const apply = () => {
+      const rs = body();
+      if (st.col >= 0) {
+        const vals = rs.map(r => val(r.cells[st.col])), numeric = vals.every(v => v === '' || v === '—' || !isNaN(num(v)));
+        const parent = rs[0].parentNode;
+        rs.map((r, i) => [r, vals[i]]).sort(([, a], [, b]) => {
+          const ea = a === '' || a === '—', eb = b === '' || b === '—'; if (ea || eb) return ea === eb ? 0 : ea ? 1 : -1;
+          return st.dir * (numeric ? num(a) - num(b) : a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'}));
+        }).forEach(([r]) => parent.appendChild(r));
+      }
+      const q = st.q.toLowerCase();
+      body().forEach(r => {
+        const t = r.textContent.toLowerCase();
+        const hide = (q && !t.includes(q)) || (st.month && !val(r.cells[0]).startsWith(st.month)) || (st.hide && /opacity:\s*\.5/.test(r.getAttribute('style') || ''));
+        r.style.display = hide ? 'none' : '';
+      });
+      ths.forEach((th, i) => th.classList.toggle('asc', i === st.col && st.dir === 1) || th.classList.toggle('desc', i === st.col && st.dir === -1));
+    };
+    ths.forEach((th, i) => { if (!th.textContent.trim()) return; th.classList.add('srt'); th.onclick = () => { st.dir = st.col === i ? -st.dir : 1; st.col = i; apply(); }; });
+    const wrap = tbl.closest('.wrap'); if (wrap && !wrap.previousElementSibling?.classList.contains('tbar') && rowsAll.length >= 4) {
+      const months = /^date$/i.test(val(ths[0])) ? [...new Set(rowsAll.map(r => val(r.cells[0]).slice(0, 7)).filter(x => /^\d{4}-\d\d$/.test(x)))].sort().reverse() : [];
+      const inactive = rowsAll.some(r => /opacity:\s*\.5/.test(r.getAttribute('style') || ''));
+      const bar = document.createElement('div'); bar.className = 'tbar';
+      bar.innerHTML = `<input type="search" placeholder="Filter…" value="${esc(st.q)}">${months.length ? `<select><option value="">All months</option>${months.map(m => `<option ${m === st.month ? 'selected' : ''}>${m}</option>`).join('')}</select>` : ''}${inactive ? `<label><input type="checkbox" style="width:auto" ${st.hide ? 'checked' : ''}> Hide inactive</label>` : ''}<span class="mute" style="font-size:12px">Click a column heading to sort</span>`;
+      wrap.parentNode.insertBefore(bar, wrap);
+      bar.querySelector('input[type=search]').oninput = e => { st.q = e.target.value; apply(); };
+      const sel = bar.querySelector('select'); if (sel) sel.onchange = e => { st.month = e.target.value; apply(); };
+      const cb = bar.querySelector('input[type=checkbox]'); if (cb) cb.onchange = e => { st.hide = e.target.checked; apply(); };
+    }
+    apply();
+  });
+}
 async function route() {
   SHIPDATA = null;
   const t = nav();
@@ -183,6 +228,7 @@ async function route() {
   S = await api('GET', '/api/settings');
   PRODUCTS = await api('GET', '/api/products');
   await safe(() => VIEWS[t]());
+  try { enhanceTables(t); } catch (e) { console.error(e); }
   const g = groupOf(t);
   try { localStorage.setItem('sub_' + g[0], t); } catch (e) {}
 }
@@ -238,6 +284,7 @@ async function dashboard() {
     ${card('Stock on hand', T.stock_units + ' items', '', 'products')}${card('Stock value (at cost)', money(T.stock_value), '', 'stock')}${card('Spent on printing', money(T.spent_printing), '', 'box')}
   </div>
   ${D.low_stock.length ? `<div class="note">⚠️ Low stock: ${D.low_stock.map(l => `<b>${esc(l.name)}</b> (${l.stock} left)`).join(', ')}</div>` : ''}
+  ${D.products.length ? `<h2>Top sellers</h2><div class="card" id="topsell"></div>` : ''}
   <h2>Monthly performance</h2>
   ${D.months.length ? `<div class="chart">${D.months.map(m => `<div class="col"><div class="bars" title="${m.month}: revenue ${money(m.revenue)}, profit ${money(m.profit)}">
       <span style="height:${Math.max(m.revenue / maxV * 100, 1)}%;background:linear-gradient(180deg,var(--acc),var(--acc2))"></span>
@@ -252,6 +299,18 @@ async function dashboard() {
   ${D.expense_categories.length ? `<h2>Expenses by category</h2><div class="wrap"><table>${D.expense_categories.map(c => `<tr><td>${esc(c.category)}</td><td class="r">${money(c.amount)}</td></tr>`).join('')}</table></div>` : ''}
   <p class="mute">Net profit = revenue − Etsy fees − postage − material cost of sold items − failed prints − other expenses.</p>`;
   $('#rng').onchange = e => { RANGE = e.target.value; safe(dashboard); };
+  if ($('#topsell')) {
+    let by = localStorage.topBy || 'qty';
+    const draw = () => {
+      const L = [...D.products].sort((a, b) => b[by] - a[by]).slice(0, 5), mx = Math.max(1, ...L.map(x => x[by]));
+      $('#topsell').innerHTML = `<div class="tbar"><span class="mute" style="font-size:12px">Ranked by</span><select id="topby">${[['qty', 'Units sold'], ['revenue', 'Revenue'], ['profit', 'Profit']].map(([k, l]) => `<option value="${k}" ${k === by ? 'selected' : ''}>${l}</option>`).join('')}</select><span class="mute" style="font-size:12px">${RANGE === 'all' ? 'all time' : 'selected period'}</span></div>
+      ${L.map((x, i) => `<div style="display:grid;grid-template-columns:26px 1fr auto;gap:10px;align-items:center;margin:9px 0"><b style="color:var(--mute)">${i + 1}</b>
+        <div><div style="display:flex;justify-content:space-between;gap:10px"><span>${esc(x.product)}</span><span class="mute" style="font-size:12px">${x.qty} sold · ${money(x.revenue)} · <span class="${cls(x.profit)}">${money(x.profit)} profit</span></span></div>
+        <div style="height:7px;background:var(--card2);border-radius:5px;margin-top:5px;overflow:hidden"><div style="height:100%;width:${Math.max(x[by] / mx * 100, 2)}%;background:linear-gradient(90deg,var(--acc),var(--acc2));border-radius:5px"></div></div></div><span></span></div>`).join('')}`;
+      $('#topby').onchange = e => { by = localStorage.topBy = e.target.value; draw(); };
+    };
+    draw();
+  }
 }
 const card = (l, v, c = '', i = '', x = '') => `<div class="card ${x}"><div class="l">${i ? ic(i) : ''}${l}</div><div class="v ${c}">${v}</div></div>`;
 
@@ -956,7 +1015,7 @@ function editSupply(s) {
 function restockSupply(id, name) {
   const m = modal(`<h2 style="margin-top:0">Restock — ${esc(name)}</h2><div class="grid">
     <div><label>Quantity received</label><input id="r_q" type="number" step="1"></div>
-    <div><label>Total paid (£, optional — logged as an expense)</label><input id="r_c" type="number" step="0.01"></div></div>
+    <div><label>Total paid (£, optional)</label><input id="r_c" type="number" step="0.01"></div></div>
   <div class="bar" style="margin-top:14px"><button class="b" id="ok">Add to stock</button><button class="g" id="set">Set stock to this number instead</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
   const go = mode => safe(async () => { await api('POST', `/api/supplies/${id}/restock`, {mode, qty: $('#r_q', m).value, cost: $('#r_c', m).value}); m.remove(); route(); });
   $('#ok', m).onclick = () => go('add'); $('#set', m).onclick = () => go('set');
