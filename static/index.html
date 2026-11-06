@@ -323,7 +323,7 @@ async function products() {
     <td class="r">${money(p.price)}</td><td class="r">${money(p.unit_cost)}</td><td class="r ${cls(p.margin_est)}">${money(p.margin_est)}</td>
     <td class="r ${!p.made_to_order && p.reorder_at && p.stock <= p.reorder_at ? 'bad' : ''}">${p.made_to_order ? '<span class="mute" title="Print per order">per order</span>' : p.stock}</td>
     <td>${p.archive_id ? `<span class="pill" title="${esc(p.archive_name)}">linked · ${p.plate_grams}g/plate</span> <button class="g" onclick="refreshBB(${p.id})">↻</button>` : '<span class="mute">—</span>'}</td>
-    <td><button class="g" onclick="editProduct(${p.id})">Edit</button> <button class="g" onclick="history(${p.id})">History</button></td></tr>`).join('') || '<tr><td colspan=8 class="mute">No products yet — add your first one.</td></tr>'}
+    <td><button class="g" onclick="editProduct(${p.id})">Edit</button> <button class="g" onclick="history(${p.id})">History</button> <a class="g" style="text-decoration:none;display:inline-block" href="/api/products/${p.id}/pdf" title="PDF of its measurements and photos">PDF</a></td></tr>`).join('') || '<tr><td colspan=8 class="mute">No products yet — add your first one.</td></tr>'}
   </table></div>`;
 }
 async function refreshBB(id) { await safe(async () => { const r = await api('POST', `/api/products/${id}/refresh-bambuddy`); toast(`Updated from Bambuddy: ${r.grams}g, ${money(r.cost)} per plate`); route(); }); }
@@ -606,7 +606,7 @@ async function filesView() {
     <div style="margin:6px 0">${p.files.map(f => `<div style="display:flex;gap:8px;align-items:center;font-size:13px;padding:3px 0"><a href="/api/files/${f.id}/download" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.orig_name)}</a><span class="mute" style="font-size:11px">${fmtSize(f.size)}</span><a data-df="${f.id}" style="cursor:pointer;color:var(--bad)">✕</a></div>`).join('') || '<span class="mute" style="font-size:12px">No 3D files yet</span>'}</div>
     <input data-url="${p.id}" placeholder="Model link (MakerWorld, Printables…)" value="${esc(p.model_url || '')}" style="margin:6px 0">
     ${p.model_url ? `<a href="${esc(p.model_url)}" target="_blank" rel="noopener" style="font-size:12px">Open model page ↗</a>` : ''}
-    <div class="bar" style="margin:10px 0 0"><label class="b alt" style="cursor:pointer;margin:0">+ 3D files<input type="file" multiple hidden data-uf="${p.id}"></label><label class="b alt" style="cursor:pointer;margin:0">+ Photos<input type="file" multiple accept="image/png,image/jpeg,image/gif" hidden data-ui="${p.id}"></label></div>
+    <div class="bar" style="margin:10px 0 0"><label class="b alt" style="cursor:pointer;margin:0">+ 3D files<input type="file" multiple hidden data-uf="${p.id}"></label><label class="b alt" style="cursor:pointer;margin:0">+ Photos<input type="file" multiple accept="image/png,image/jpeg,image/gif" hidden data-ui="${p.id}"></label><a class="b alt" href="/api/products/${p.id}/pdf">PDF</a></div>
   </div>`).join('') || '<p class="mute">No products yet.</p>'}</div>`;
   $('#fq').oninput = e => { localStorage.filesQ = e.target.value; filesView(); };
   const upload = (url, inp) => safe(async () => {
@@ -639,7 +639,7 @@ function measList() {
   const cats = [...new Set(list.map(m => m.category || 'Uncategorised'))];
   $('#mlist').innerHTML = cats.map(c => `<div class="mute" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:12px 0 4px">${esc(c)}</div>` +
     list.filter(m => (m.category || 'Uncategorised') === c).map(m => `<div data-mid="${m.id}" style="display:flex;gap:8px;align-items:center;padding:8px 10px;border-radius:9px;cursor:pointer;border:1px solid ${m.id == localStorage.measSel ? 'var(--accent,#ff6a2b)' : 'transparent'};background:${m.id == localStorage.measSel ? 'var(--card)' : 'transparent'}">
-      <span style="flex:1;font-size:13px">${esc(m.name)}</span><span class="${measDone(m) === m.values.length && m.values.length ? 'good' : 'mute'}" style="font-size:11px">${measDone(m)}/${m.values.length}</span></div>`).join('')).join('') || '<p class="mute">Nothing found.</p>';
+      <span style="flex:1;font-size:13px">${esc(m.name)}</span>${(m.photos || []).length ? `<span class="mute" style="font-size:11px">📷${m.photos.length}</span>` : ''}<span class="${measDone(m) === m.values.length && m.values.length ? 'good' : 'mute'}" style="font-size:11px">${measDone(m)}/${m.values.length}</span></div>`).join('')).join('') || '<p class="mute">Nothing found.</p>';
   document.querySelectorAll('[data-mid]').forEach(el => el.onclick = () => { localStorage.measSel = el.dataset.mid; measList(); measDetail(); });
 }
 function measDetail() {
@@ -655,7 +655,9 @@ function measDetail() {
     <div id="m_rows">${m.values.map(row).join('')}</div>
     <button class="g" type="button" id="m_add">+ Add row</button>
     <div style="margin-top:14px"><label>Notes</label><textarea id="m_notes" rows="3">${esc(m.notes)}</textarea></div>
-    <div class="bar" style="margin:14px 0 0"><button class="g" id="m_next">Next item →</button><span class="sp"></span><button class="g" id="m_dup">Duplicate</button><button class="g" id="m_del">Delete</button></div></div>`;
+    <div style="margin-top:14px"><label>Photos</label><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">${(m.photos || []).map(id => `<span style="position:relative"><a href="/api/measure-photos/${id}/file" target="_blank"><img src="/api/measure-photos/${id}/file" loading="lazy" style="width:96px;height:96px;object-fit:cover;border-radius:9px;border:1px solid var(--line)"></a><a data-dp="${id}" style="position:absolute;top:-6px;right:-6px;cursor:pointer;background:var(--bad);color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;font-size:12px;line-height:18px">×</a></span>`).join('') || '<span class="mute" style="font-size:12px">No photos yet</span>'}</div>
+      <label class="b alt" style="cursor:pointer;margin:0;display:inline-block">+ Add photos<input type="file" id="m_up" multiple accept="image/*" hidden></label></div>
+    <div class="bar" style="margin:14px 0 0"><button class="g" id="m_next">Next item →</button><a class="b alt" href="/api/measurements/${m.id}/pdf">Export PDF</a><span class="sp"></span><button class="g" id="m_dup">Duplicate</button><button class="g" id="m_del">Delete</button></div></div>`;
   let t;
   const save = () => {
     clearTimeout(t); $('#m_state').textContent = 'saving…';
@@ -668,7 +670,9 @@ function measDetail() {
       measList();
     }), 400);
   };
-  box.oninput = box.onchange = save;
+  box.oninput = save; box.onchange = e => { if (e.target.type !== 'file') save(); };
+  $('#m_up').onchange = e => safe(async () => { const fd = new FormData(); [...e.target.files].forEach(f => fd.append('files', f)); toast('Uploading…'); const r = await fetch(`/api/measurements/${m.id}/photos`, {method: 'POST', body: fd}); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); measuresView(); });
+  box.querySelectorAll('[data-dp]').forEach(b => b.onclick = () => confirm('Delete this photo?') && safe(async () => { await api('DELETE', `/api/measure-photos/${b.dataset.dp}`); measuresView(); }));
   box.onkeydown = e => { if (e.key === 'Enter' && e.target.classList.contains('mv')) { e.preventDefault(); const r = e.target.closest('.mrow').nextElementSibling; (r ? r.querySelector('.mv') : $('#m_notes')).focus(); } };
   box.onclick = e => { const b = e.target.closest('button.g[title]'); if (b) { b.parentNode.remove(); save(); } };
   $('#m_add').onclick = () => { $('#m_rows').insertAdjacentHTML('beforeend', row({label: '', value: '', unit: 'mm'})); $('#m_rows').lastChild.querySelector('.ml').focus(); };

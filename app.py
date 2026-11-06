@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.27.0"
+VERSION = "0.28.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -183,6 +183,13 @@ CREATE TABLE IF NOT EXISTS measure_items (
   notes TEXT DEFAULT '',
   updated_at TEXT DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS measure_photos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER NOT NULL,
+  filename TEXT NOT NULL,
+  caption TEXT DEFAULT '',
+  added_at TEXT DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS measure_values (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   item_id INTEGER NOT NULL,
@@ -237,6 +244,7 @@ SALE_MIGRATIONS = [("status", "TEXT DEFAULT 'shipped'"), ("variation", "TEXT DEF
                    ("tracking", "TEXT DEFAULT ''"), ("shipped_at", "TEXT DEFAULT ''")]
 IMG_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "images")
 FILE_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "files")
+MPHOTO_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "mphotos")
 os.makedirs(IMG_DIR, exist_ok=True)
 
 
@@ -2228,12 +2236,19 @@ def api_measurements():
     out = rows("SELECT * FROM measure_items ORDER BY category COLLATE NOCASE, name COLLATE NOCASE")
     for m in out:
         m["values"] = rows("SELECT label,value,unit FROM measure_values WHERE item_id=? ORDER BY rank,id", (m["id"],))
+        m["photos"] = [r["id"] for r in rows("SELECT id FROM measure_photos WHERE item_id=? ORDER BY id", (m["id"],))]
     return jsonify(out)
 
 
 @app.route("/api/measurements/<int:iid>", methods=["PUT", "DELETE"])
 def api_measurement(iid):
     if request.method == "DELETE":
+        for r in rows("SELECT filename FROM measure_photos WHERE item_id=?", (iid,)):
+            try:
+                os.remove(os.path.join(MPHOTO_DIR, r["filename"]))
+            except OSError:
+                pass
+        db().execute("DELETE FROM measure_photos WHERE item_id=?", (iid,))
         db().execute("DELETE FROM measure_values WHERE item_id=?", (iid,))
         db().execute("DELETE FROM measure_items WHERE id=?", (iid,))
         db().commit()
@@ -2319,6 +2334,164 @@ def _autosync_loop():
             pass
 
 
+@app.route("/api/measurements/<int:iid>/photos", methods=["POST"])
+def api_measure_photos_add(iid):
+    from PIL import Image, ImageOps
+    os.makedirs(MPHOTO_DIR, exist_ok=True)
+    n, bad = 0, []
+    for f in request.files.getlist("files"):
+        try:
+            im = ImageOps.exif_transpose(Image.open(f.stream)).convert("RGB")
+            im.thumbnail((1800, 1800))
+            name = uuid.uuid4().hex + ".jpg"
+            im.save(os.path.join(MPHOTO_DIR, name), "JPEG", quality=85)
+            db().execute("INSERT INTO measure_photos(item_id,filename) VALUES(?,?)", (iid, name))
+            n += 1
+        except Exception:
+            bad.append(f.filename)
+    db().commit()
+    if bad and not n:
+        return jsonify({"error": "Couldn't read that image (" + ", ".join(bad) + "). Use JPG or PNG."}), 400
+    return jsonify({"ok": True, "added": n, "skipped": bad})
+
+
+@app.route("/api/measure-photos/<int:pid>/file")
+def api_measure_photo_file(pid):
+    r = one("SELECT filename FROM measure_photos WHERE id=?", (pid,))
+    if not r:
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(MPHOTO_DIR, r["filename"], max_age=3600)
+
+
+@app.route("/api/measure-photos/<int:pid>", methods=["DELETE"])
+def api_measure_photo_delete(pid):
+    r = one("SELECT filename FROM measure_photos WHERE id=?", (pid,))
+    if r:
+        try:
+            os.remove(os.path.join(MPHOTO_DIR, r["filename"]))
+        except OSError:
+            pass
+        db().execute("DELETE FROM measure_photos WHERE id=?", (pid,))
+        db().commit()
+    return jsonify({"ok": True})
+
+
+def _pdf_response(title, build):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak, KeepTogether
+    from reportlab.lib.utils import ImageReader
+    from xml.sax.saxutils import escape as esc
+
+    ss = getSampleStyleSheet()
+    H1 = ParagraphStyle("h1", parent=ss["Title"], fontSize=20, alignment=0, spaceAfter=4)
+    H2 = ParagraphStyle("h2", parent=ss["Heading2"], fontSize=14, spaceBefore=12, spaceAfter=4)
+    H3 = ParagraphStyle("h3", parent=ss["Heading3"], fontSize=11, textColor=colors.HexColor("#666666"), spaceBefore=8)
+    P = ParagraphStyle("p", parent=ss["BodyText"], fontSize=9.5, leading=13)
+    SM = ParagraphStyle("sm", parent=P, fontSize=8, textColor=colors.HexColor("#777777"))
+    W = A4[0] - 30 * mm
+
+    def photos(paths):
+        cells, row = [], []
+        for pth in paths:
+            try:
+                iw, ih = ImageReader(pth).getSize()
+                w = W / 2 - 4 * mm
+                h = min(w * ih / iw, 85 * mm)
+                w = h * iw / ih
+                row.append(RLImage(pth, width=w, height=h))
+            except Exception:
+                continue
+            if len(row) == 2:
+                cells.append(row)
+                row = []
+        if row:
+            cells.append(row + [""])
+        if not cells:
+            return []
+        t = Table(cells, colWidths=[W / 2] * 2)
+        t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+        return [t]
+
+    def item_block(m):
+        out = [Paragraph(esc(m["name"]), H2)]
+        if m.get("category"):
+            out.append(Paragraph(esc(m["category"]), SM))
+        vals = [[Paragraph(esc(v["label"]), P), Paragraph("<b>%s %s</b>" % (esc(v["value"]), esc(v["unit"])), P)] for v in m["values"] if v["value"]]
+        if vals:
+            t = Table(vals, colWidths=[W * 0.62, W * 0.38])
+            t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#dddddd")), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                   ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+            out.append(t)
+        else:
+            out.append(Paragraph("No measurements entered yet.", SM))
+        if m.get("notes"):
+            out.append(Paragraph("<b>Notes:</b> " + esc(m["notes"]).replace("\n", "<br/>"), P))
+        ph = [os.path.join(MPHOTO_DIR, r["filename"]) for r in rows("SELECT filename FROM measure_photos WHERE item_id=? ORDER BY id", (m["id"],))]
+        if ph:
+            out.append(Paragraph("Photos", H3))
+            out += photos(ph)
+        return out
+
+    story = build(dict(H1=H1, H2=H2, H3=H3, P=P, SM=SM, item_block=item_block, photos=photos, Paragraph=Paragraph, Spacer=Spacer, esc=esc, PageBreak=PageBreak))
+    buf = io.BytesIO()
+    SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=15 * mm, bottomMargin=15 * mm, title=title).build(story)
+    buf.seek(0)
+    fname = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") + ".pdf"
+    return send_file(buf, mimetype="application/pdf", as_attachment=True, download_name=fname)
+
+
+def _measure_item(iid):
+    m = one("SELECT * FROM measure_items WHERE id=?", (iid,))
+    if m:
+        m["values"] = rows("SELECT label,value,unit FROM measure_values WHERE item_id=? ORDER BY rank,id", (iid,))
+    return m
+
+
+@app.route("/api/measurements/<int:iid>/pdf")
+def api_measurement_pdf(iid):
+    m = _measure_item(iid)
+    if not m:
+        return jsonify({"error": "not found"}), 404
+    return _pdf_response(m["name"], lambda k: k["item_block"](m) + [k["Spacer"](1, 6), k["Paragraph"]("Exported " + datetime.now().strftime("%d %b %Y"), k["SM"])])
+
+
+@app.route("/api/products/<int:pid>/pdf")
+def api_product_pdf(pid):
+    p = one("SELECT * FROM products WHERE id=?", (pid,))
+    if not p:
+        return jsonify({"error": "not found"}), 404
+    items = [_measure_item(r["id"]) for r in rows("SELECT id FROM measure_items WHERE product_id=? ORDER BY category COLLATE NOCASE, name COLLATE NOCASE", (pid,))]
+    imgs = [os.path.join(IMG_DIR, r["filename"]) for r in rows("SELECT filename FROM product_images WHERE product_id=? ORDER BY rank,id", (pid,))]
+    files = rows("SELECT orig_name FROM product_files WHERE product_id=? ORDER BY id", (pid,))
+
+    def build(k):
+        s = [k["Paragraph"](k["esc"](p["name"]), k["H1"])]
+        meta = []
+        if p["sku"]:
+            meta.append("SKU " + p["sku"])
+        meta.append("Price £%.2f" % (p["price"] or 0))
+        s.append(k["Paragraph"](k["esc"](" · ".join(meta)), k["P"]))
+        if p.get("model_url"):
+            s.append(k["Paragraph"]("Model: " + k["esc"](p["model_url"]), k["SM"]))
+        if files:
+            s.append(k["Paragraph"]("3D files: " + k["esc"](", ".join(f["orig_name"] for f in files)), k["SM"]))
+        if imgs:
+            s.append(k["Paragraph"]("Product photos", k["H2"]))
+            s += k["photos"](imgs)
+        if items:
+            s.append(k["Paragraph"]("Measurements", k["H2"]))
+            for m in items:
+                s += k["item_block"](m)
+        else:
+            s.append(k["Paragraph"]("No measurement items are linked to this product yet (link them from the Measurements tab).", k["SM"]))
+        s += [k["Spacer"](1, 8), k["Paragraph"]("Exported " + datetime.now().strftime("%d %b %Y"), k["SM"])]
+        return s
+    return _pdf_response(p["name"], build)
+
+
 # ---------------------------------------------------------------- GitHub backup
 import threading
 import gzip
@@ -2384,7 +2557,7 @@ def run_backup():
             if "404" not in str(e) and "409" not in str(e):
                 raise
         items = [("etsy-tracker/etsy.db.gz", _db_snapshot())]
-        for folder, name in ((IMG_DIR, "images"), (FILE_DIR, "files")):
+        for folder, name in ((IMG_DIR, "images"), (FILE_DIR, "files"), (MPHOTO_DIR, "mphotos")):
             if os.path.isdir(folder):
                 for fn in sorted(os.listdir(folder)):
                     p = os.path.join(folder, fn)
