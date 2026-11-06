@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="manifest" href="/static/manifest.json"><link rel="icon" href="/static/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/static/icon.svg">
+<meta name="theme-color" content="#0b0e14"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Etsy Tracker">
 <title>Etsy Tracker</title>
 <style>
 :root{--inp:#0b0e14;--hover:#ffffff08;--hover2:#ffffff05;--th:#ffffff04;--glow:#1a1f2e55;--over:#05070bb0;--shadow:#00000030;--bg:#0a0c11;--side:#0e1117;--card:#131720;--card2:#181d29;--line:#222838;--text:#e9ebf2;--mute:#8a93a8;--acc:#ff7a3d;--acc2:#f0461e;--good:#34d399;--bad:#f87171;--r:14px}
@@ -33,6 +35,7 @@ body{margin:0;background:radial-gradient(1200px 500px at 70% -10%,var(--glow),tr
 .st.shipped{background:#34d3991a;color:var(--good)}
 .print-only{display:none}
 @media print{.side,.top,.kan,.no-print,#toast{display:none!important}.print-only{display:block!important;color:#000}.print-only .slip{page-break-inside:avoid;border:1px solid #000;padding:10px;margin-bottom:10px;font-size:13px}body{background:#fff}.app,main{display:block!important;padding:0!important}}
+@media(max-width:820px){.kan{grid-template-columns:1fr;overflow:visible}.ocard .acts button,.ocard .acts a{padding:11px 14px;font-size:14px}button.b,button.g,a.b{min-height:42px}input,select,textarea{font-size:16px}.wrap{overflow-x:auto}.modal>div{max-width:100%!important;max-height:92vh;overflow:auto;border-radius:16px}.top{flex-wrap:wrap;gap:8px}.cards{grid-template-columns:1fr!important}}
 @media(max-width:820px){.theme{margin:0 0 0 auto;padding:8px}.theme span{display:none}}
 .ver{display:block;font-size:11px;font-weight:500;color:var(--mute);letter-spacing:0;margin-top:1px}
 .logo svg{width:18px;height:18px;stroke:#fff}
@@ -147,7 +150,7 @@ async function safe(fn) { try { await fn(); } catch (e) { toast(e.message, true)
 const GROUPS = [
   ['dashboard', 'Dashboard', [['dashboard', 'Overview'], ['history', 'History']]],
   ['products', 'Products', [['products', 'Products'], ['listings', 'Listings'], ['templates', 'Templates'], ['files', 'Files'], ['measures', 'Measurements']]],
-  ['orders', 'Orders', [['orders', 'Board'], ['sales', 'Sales'], ['import', 'Import']]],
+  ['orders', 'Orders', [['orders', 'Board'], ['print', 'Print today'], ['sales', 'Sales'], ['import', 'Import']]],
   ['stock', 'Stock', [['stock', 'Printing'], ['filament', 'Filament'], ['supplies', 'Supplies']]],
   ['pricing', 'Pricing', [['pricing', 'Pricing'], ['shipping', 'Shipping & boxes']]],
   ['expenses', 'Expenses', [['expenses', 'Expenses']]],
@@ -210,11 +213,14 @@ async function dashboard() {
   const T = D.totals;
   let supAlert = [];
   try { supAlert = (await api('GET', '/api/supplies')).filter(x => x.active && x.status !== 'ok'); } catch (e) {}
+  let ordAl = [];
+  try { ordAl = (await api('GET', '/api/alerts')).filter(x => x.kind === 'orders'); } catch (e) {}
   const maxV = Math.max(1, ...D.months.map(m => Math.max(m.revenue, Math.abs(m.profit))));
   $('#main').innerHTML = `
   <div class="top"><h1>Dashboard</h1><span class="sp"></span><select id="rng" style="width:auto">
     ${[['all','All time'],['year','This year'],['month','This month'],['30','Last 30 days']].map(([k, l]) => `<option value="${k}" ${k === RANGE ? 'selected' : ''}>${l}</option>`).join('')}
   </select></div>
+  ${ordAl.length ? `<div class="note" style="border-color:var(--bad)">${ordAl.map(x => `<div>⚠ ${esc(x.text)} — <a href="#${x.view}">open</a></div>`).join('')}</div>` : ''}
   ${supAlert.length ? `<div class="note"><b>Supplies:</b> ${supAlert.map(x => `${esc(x.name)} (${x.status === 'order_now' ? 'order now' : 'order soon'})`).join(', ')} — <a href="#supplies" style="color:var(--acc)">see Supplies</a></div>` : ''}
   ${D.goal && D.goal.target ? `<div class="card" style="margin-bottom:12px"><div class="l">${ic('trend')}Profit goal · ${money(D.goal.target)}</div>
     <div style="display:flex;align-items:baseline;gap:10px;margin-top:6px"><div class="v ${cls(D.goal.net)}">${money(D.goal.net)}</div><div class="mute">${D.goal.pct}% there</div><span class="sp"></span>
@@ -256,7 +262,7 @@ async function products() {
   <div class="wrap"><table><tr><th>Product</th><th>SKU</th><th class="r">Price</th><th class="r">Unit cost</th><th class="r">Margin</th><th class="r">Stock</th><th>Bambuddy</th><th></th></tr>
   ${PRODUCTS.map(p => `<tr style="${p.active ? '' : 'opacity:.5'}"><td>${esc(p.name)}</td><td class="mute">${esc(p.sku)}</td>
     <td class="r">${money(p.price)}</td><td class="r">${money(p.unit_cost)}</td><td class="r ${cls(p.margin_est)}">${money(p.margin_est)}</td>
-    <td class="r ${p.reorder_at && p.stock <= p.reorder_at ? 'bad' : ''}">${p.stock}</td>
+    <td class="r ${!p.made_to_order && p.reorder_at && p.stock <= p.reorder_at ? 'bad' : ''}">${p.made_to_order ? '<span class="mute" title="Print per order">per order</span>' : p.stock}</td>
     <td>${p.archive_id ? `<span class="pill" title="${esc(p.archive_name)}">linked · ${p.plate_grams}g/plate</span> <button class="g" onclick="refreshBB(${p.id})">↻</button>` : '<span class="mute">—</span>'}</td>
     <td><button class="g" onclick="editProduct(${p.id})">Edit</button> <button class="g" onclick="history(${p.id})">History</button></td></tr>`).join('') || '<tr><td colspan=8 class="mute">No products yet — add your first one.</td></tr>'}
   </table></div>`;
@@ -283,7 +289,9 @@ function editProduct(id) {
     <div><label>Electricity per plate (£)</label><input id="f_energy" type="number" step="0.001" value="${p.plate_energy || 0}"></div>
     <div><label>Hands-on time per item (min: cleanup, packing)</label><input id="f_lab" type="number" value="${p.labour_minutes || 0}"></div>
     <div><label>Print time per item (min)</label><input id="f_min" type="number" value="${p.print_minutes}"></div>
-    <div><label>Low-stock warning at</label><input id="f_re" type="number" value="${p.reorder_at}"></div>
+    <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="f_mto" style="width:auto" ${p.made_to_order ? 'checked' : ''}> Print per order — made only when someone buys it (never stocked, so it won’t get “print today” top-ups)</label></div>
+    <div id="f_stk" class="full" ${p.made_to_order ? 'style="display:none"' : ''}><div class="grid"><div><label>Low-stock warning at</label><input id="f_re" type="number" value="${p.reorder_at}"></div>
+      <div><label>Print up to this many when low</label><input id="f_rt" type="number" value="${p.restock_to || ''}" placeholder="default: double the warning level"></div></div></div>
     <div class="full"><label>Printed item size L × W × H (cm) — lets the Shipping tab suggest a box</label><div style="display:flex;gap:6px"><input id="f_il" type="number" step="0.1" placeholder="L" value="${p.item_l || ''}"><input id="f_iw" type="number" step="0.1" placeholder="W" value="${p.item_w || ''}"><input id="f_ih" type="number" step="0.1" placeholder="H" value="${p.item_h || ''}"></div></div>
     <div class="full"><label>Packaging used per item <span class="mute">(stock in the Supplies tab drops automatically when this sells)</span></label><div id="f_sup"></div>
       <div style="display:flex;gap:6px;margin-top:6px"><select id="f_supsel" style="flex:1"><option value="">Add a supply…</option></select><button class="g" id="f_supadd">Add</button></div></div>
@@ -299,6 +307,7 @@ function editProduct(id) {
     priceDialog({cost, postage: po, ship: sh, postageSrc: ps, shipSrc: ss, name: $('#f_name', m).value || 'this product'}, v => { $('#f_price', m).value = v.toFixed(2); });
   });
   let arch = {id: p.archive_id, name: p.archive_name};
+  $('#f_mto', m).onchange = e => { $('#f_stk', m).style.display = e.target.checked ? 'none' : ''; };
   let SUP = [], psel = [];
   const renderSup = () => {
     $('#f_sup', m).innerHTML = psel.map((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}; const roll = s.unit === 'cm';
@@ -333,7 +342,7 @@ function editProduct(id) {
   $('#save', m).onclick = () => safe(async () => {
     const body = {name: $('#f_name', m).value, sku: $('#f_sku', m).value, price: $('#f_price', m).value, archive_id: arch.id, archive_name: arch.name,
       plate_grams: $('#f_grams', m).value, plate_cost: $('#f_pcost', m).value, items_per_plate: $('#f_ipp', m).value, extra_cost: $('#f_extra', m).value,
-      plate_energy: $('#f_energy', m).value, labour_minutes: $('#f_lab', m).value, print_minutes: $('#f_min', m).value, reorder_at: $('#f_re', m).value, notes: $('#f_notes', m).value, active: $('#f_active', m).checked};
+      plate_energy: $('#f_energy', m).value, labour_minutes: $('#f_lab', m).value, print_minutes: $('#f_min', m).value, reorder_at: $('#f_re', m).value, restock_to: $('#f_rt', m).value, made_to_order: $('#f_mto', m).checked, notes: $('#f_notes', m).value, active: $('#f_active', m).checked};
     const saved = await api(id ? 'PUT' : 'POST', id ? `/api/products/${id}` : '/api/products', body);
     const pid = id || (saved && saved.id);
     if (pid) { await api('PUT', `/api/products/${pid}/supplies`, psel); await api('POST', `/api/products/${pid}/size`, {item_l: $('#f_il', m).value, item_w: $('#f_iw', m).value, item_h: $('#f_ih', m).value}); }
@@ -619,6 +628,20 @@ function newMeasure() {
   });
 }
 
+async function printToday() {
+  const L = await api('GET', '/api/print-today');
+  const tot = L.reduce((t, x) => ({g: t.g + x.grams, m: t.m + x.minutes, pl: t.pl + x.plates}), {g: 0, m: 0, pl: 0});
+  const hrs = m => m >= 60 ? (m / 60).toFixed(1) + ' h' : m + ' min';
+  $('#main').innerHTML = `<div class="top"><h1>Print today</h1><span class="sp"></span><button class="b alt" onclick="window.print()">Print this list</button></div>
+  ${L.length ? `<div class="note"><b>${L.length}</b> product${L.length === 1 ? '' : 's'} · about <b>${tot.pl}</b> plate${tot.pl === 1 ? '' : 's'} · <b>${Math.round(tot.g)} g</b> filament${tot.m ? ' · ~' + hrs(tot.m) + ' print time' : ''}</div>` : '<div class="note">Nothing to print — every order has stock and nothing is below its low-stock level. 🎉</div>'}
+  <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">${L.map(x => `<div class="card">
+    <div style="display:flex;gap:8px;align-items:center"><div style="font-weight:600;font-size:15px;flex:1">${esc(x.name)}</div><span class="pill">${x.made_to_order ? 'Print per order' : 'Stocked'}</span></div>
+    <div style="margin:10px 0">${x.orders.map(o => `<div style="display:flex;gap:8px;padding:3px 0"><b>${o.qty}×</b><span style="flex:1">${o.variation ? esc(o.variation) : 'order'}</span>${o.started ? '<span class="st">printing</span>' : ''}<span class="mute" style="font-size:12px">${o.oldest}</span></div>`).join('')}
+      ${x.topup ? `<div style="display:flex;gap:8px;padding:3px 0"><b>${x.topup}×</b><span style="flex:1" class="mute">top-up to restock (stock ${x.stock})</span></div>` : ''}</div>
+    <div class="mute" style="font-size:12px">${x.plates} plate${x.plates === 1 ? '' : 's'} · ${x.grams} g${x.minutes ? ' · ~' + hrs(x.minutes) : ''}</div>
+    <div class="bar no-print" style="margin:10px 0 0">${x.sale_ids.length ? `<button class="b alt" data-st="printing" data-ids="${x.sale_ids.join(',')}">Start printing</button>` : ''}${x.printing_ids.length ? `<button class="b" data-st="to_ship" data-ids="${x.printing_ids.join(',')}">Printed ✓</button>` : ''}${!x.sale_ids.length && !x.printing_ids.length ? '<span class="mute" style="font-size:12px">Log the print in Stock → Printing when done</span>' : ''}</div></div>`).join('')}</div>`;
+  document.querySelectorAll('[data-st]').forEach(b => b.onclick = () => safe(async () => { await api('POST', '/api/orders/status', {status: b.dataset.st, sale_ids: b.dataset.ids.split(',')}); printToday(); }));
+}
 async function dupTemplate(id) { const t = TEMPLATES.find(x => x.id === id); await safe(async () => { await api('POST', '/api/templates', {...t, name: t.name + ' (copy)'}); templates(); }); }
 async function delTemplate(id) { if (confirm('Delete this template?')) await safe(async () => { await api('DELETE', `/api/templates/${id}`); templates(); }); }
 function editTemplate(id) {
@@ -1124,8 +1147,31 @@ async function historyView() {
 /* ---------------- Orders ---------------- */
 const STAGES = [['to_print','To print'],['printing','Printing'],['to_ship','To ship'],['shipped','Shipped']];
 let ORDERS = [];
+let SEL = new Set(), PSUP = {}, OSUPS = [], OD = null;
+function packAdvice(o) {
+  const items = o.items.filter(i => i.status !== 'shipped').map(i => ({p: PRODUCTS.find(x => x.id === i.product_id), q: i.qty})).filter(i => i.p);
+  const use = {};
+  items.forEach(({p, q}) => (PSUP[p.id] || []).forEach(r => { use[r.supply_id] = (use[r.supply_id] || 0) + r.qty * q; }));
+  OSUPS.filter(s => s.active && s.per_order > 0).forEach(s => { use[s.id] = (use[s.id] || 0) + s.per_order; });
+  const supplies = Object.entries(use).map(([id, q]) => { const s = OSUPS.find(x => x.id == id); return s ? {name: s.name, q: s.unit === 'cm' ? +q.toFixed(0) + ' cm' : +q.toFixed(1) + '×'} : null; }).filter(Boolean);
+  let box = null, price = null;
+  if (items.length && items.every(i => i.p.item_l > 0 && i.p.item_w > 0 && i.p.item_h > 0)) {
+    const vol = items.reduce((t, i) => t + i.q * i.p.item_l * i.p.item_w * i.p.item_h, 0) * 1.3;
+    const itemG = items.reduce((t, i) => t + i.q * (i.p.items_per_plate ? i.p.plate_grams / i.p.items_per_plate : 0), 0);
+    const fits = bx => items.every(i => { const a = [i.p.item_l, i.p.item_w, i.p.item_h].sort((x, y) => y - x), b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]); }) && vol <= bx.d[0] * bx.d[1] * bx.d[2];
+    const own = OSUPS.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, d: [s.box_l, s.box_w, s.box_h], g: s.box_g || 0, own: true}));
+    let c = own.filter(fits); if (!c.length) c = STD_BOXES.map(([name, l, w, hh, g]) => ({name, d: [l, w, hh], g, own: false})).filter(fits);
+    c = c.map(bx => { const g = Math.round(itemG + bx.g), outer = bx.d.map(x => x + 1); const op = shipOptions(OD.R.filter(x => x.etsy), g, outer).filter(x => x.ok).sort((a, b) => a.price - b.price)[0]; return {...bx, g, op}; })
+      .sort((a, b) => ((a.op ? a.op.price : 99) - (b.op ? b.op.price : 99)) || (a.d[0] * a.d[1] * a.d[2] - b.d[0] * b.d[1] * b.d[2]));
+    if (c[0]) { box = c[0]; if (c[0].op) price = [c[0].op.price, c[0].op.name.replace(' (est.)', '')]; }
+  }
+  if (!price && items.length) price = postageFor(items[0].p, OD);
+  return {box, price, supplies};
+}
 async function orders() {
-  ORDERS = await api('GET', '/api/orders');
+  [ORDERS, PSUP, OSUPS, OD] = await Promise.all([api('GET', '/api/orders'), api('GET', '/api/product-supplies').then(r => r.reduce((m, x) => ((m[x.product_id] = m[x.product_id] || []).push(x), m), {})), api('GET', '/api/supplies'), loadShipData()]);
+  if (!PRODUCTS.length) PRODUCTS = await api('GET', '/api/products');
+  const live = new Set(ORDERS.filter(o => o.status !== 'shipped').map(o => o.key)); SEL = new Set([...SEL].filter(k => live.has(k)));
   const by = k => ORDERS.filter(o => o.status === k);
   const need = {};
   ORDERS.filter(o => o.status === 'to_print' || o.status === 'printing').forEach(o => o.items.forEach(i => {
@@ -1133,36 +1179,67 @@ async function orders() {
     const key = i.product + (i.variation ? ' — ' + i.variation : '');
     need[key] = (need[key] || 0) + i.qty; }));
   const shipped = by('shipped').slice(0, 15);
-  const card = o => `<div class="ocard"><div class="oh"><span>${o.order_ref ? '#' + esc(o.order_ref) : 'Manual'}</span><span>${o.date}</span></div>
+  const card = o => { const adv = o.status === 'to_ship' ? packAdvice(o) : null; return `<div class="ocard"><div class="oh"><span>${o.status !== 'shipped' ? `<input type="checkbox" class="osel" data-k="${esc(o.key)}" style="width:auto;margin-right:6px" ${SEL.has(o.key) ? 'checked' : ''}>` : ''}${o.order_ref ? '#' + esc(o.order_ref) : 'Manual'}</span><span>${o.date}</span></div>
     ${o.items.map(i => `<div class="it"><b>${i.qty}×</b> ${esc(i.product)}${i.variation ? `<div class="var">${esc(i.variation)}</div>` : ''}${i.status !== o.status && o.status !== 'shipped' ? ` <span class="mute">(${i.status.replace('_', ' ')})</span>` : ''}</div>`).join('')}
+    ${adv && (adv.box || adv.supplies.length || adv.price) ? `<div class="mute" style="font-size:12px;border-top:1px dashed var(--line);margin-top:6px;padding-top:6px">📦 ${adv.box ? `<b>${esc(adv.box.name)}</b>${adv.box.own ? '' : ' (generic)'}` : '<i>add item sizes for a box suggestion</i>'}${adv.price && adv.price[0] > 0 ? ` · ~${money(adv.price[0])} ${esc(adv.price[1])}` : ''}${adv.supplies.length ? `<div>Grab: ${adv.supplies.map(x => esc(x.name) + ' ' + x.q).join(', ')}</div>` : ''}</div>` : ''}
     <div class="oh"><span>${money(o.revenue)}</span>${o.tracking ? `<span>📦 ${esc(o.tracking)}</span>` : ''}</div>
     <div class="acts">${o.status === 'to_print' ? `<button class="b alt" onclick="moveOrder('${o.key}','printing')">Start printing</button>` : ''}
     ${o.status === 'printing' ? `<button class="b alt" onclick="moveOrder('${o.key}','to_ship')">Printed ✓</button>` : ''}
-    ${o.status === 'to_ship' ? `<button class="b" onclick="shipOrder('${o.key}')">Mark shipped…</button>` : ''}
-    ${o.status !== 'to_print' && o.status !== 'shipped' ? `<button class="g" onclick="moveOrder('${o.key}','to_print')">↩</button>` : ''}</div></div>`;
+    ${o.status === 'to_ship' ? `<button class="b" onclick="shipOrders(['${o.key}'])">Ship…</button><button class="g" title="Mark shipped without tracking" onclick="quickShip(['${o.key}'])">Shipped ✓</button>` : ''}
+    ${o.status !== 'to_print' && o.status !== 'shipped' ? `<button class="g" onclick="moveOrder('${o.key}','to_print')">↩</button>` : ''}</div></div>`; };
   $('#main').innerHTML = `
 <div class="top"><h1>Orders</h1><span class="sp"></span>${S.etsy_connected ? '<button class="b alt" onclick="quickSync().then(()=>{})">↻ Sync from Etsy</button>' : ''}<button class="b alt" onclick="window.print()">Print packing list</button></div>
+  ${S.etsy_connected && S.etsy_autosync_status ? `<div class="mute" style="font-size:12px;margin:-6px 0 10px">Auto-sync: ${esc(S.etsy_autosync_status)}</div>` : ''}
   ${S.etsy_connected && !S.etsy_can_ship ? '<div class="note">To send tracking to Etsy from here, re-authorise in Settings → Etsy (new “transactions_w” permission). Marking shipped locally works regardless.</div>' : ''}
-  ${Object.keys(need).length ? `<div class="note"><b>To print:</b> ${Object.entries(need).map(([k, n]) => `${n}× ${esc(k)}`).join(' · ')}</div>` : ''}
-  <div class="kan">${STAGES.map(([k, l]) => `<div class="kcol"><h3><span>${l}</span><span>${k === 'shipped' ? by(k).length : by(k).length}</span></h3>${(k === 'shipped' ? shipped : by(k)).map(card).join('') || '<div class="mute" style="font-size:12px">Nothing here</div>'}</div>`).join('')}</div>
-  <div class="print-only"><h2>Packing list</h2>${by('to_ship').map(o => `<div class="slip"><b>${o.order_ref ? 'Order #' + esc(o.order_ref) : 'Manual order'}</b> — ${o.date}${o.items.map(i => `<div>☐ ${i.qty}× ${esc(i.product)}${i.variation ? ' — ' + esc(i.variation) : ''}</div>`).join('')}</div>`).join('') || '<p>Nothing waiting to ship.</p>'}</div>`;
+  ${Object.keys(need).length ? `<div class="note"><b>To print:</b> ${Object.entries(need).map(([k, n]) => `${n}× ${esc(k)}`).join(' · ')} — <a href="#print">Print today →</a></div>` : ''}
+  <div id="bulk"></div>
+  <div class="kan">${STAGES.map(([k, l]) => `<div class="kcol"><h3><span>${l}</span><span>${by(k).length}</span></h3>${(k === 'shipped' ? shipped : by(k)).map(card).join('') || '<div class="mute" style="font-size:12px">Nothing here</div>'}</div>`).join('')}</div>
+  <div class="print-only"><h2>Packing list</h2>${by('to_ship').map(o => { const a = packAdvice(o); return `<div class="slip"><b>${o.order_ref ? 'Order #' + esc(o.order_ref) : 'Manual order'}</b> — ${o.date}${o.items.map(i => `<div>☐ ${i.qty}× ${esc(i.product)}${i.variation ? ' — ' + esc(i.variation) : ''}</div>`).join('')}${a.box ? `<div>Box: ${esc(a.box.name)}</div>` : ''}${a.supplies.length ? `<div>Grab: ${a.supplies.map(x => esc(x.name) + ' ' + x.q).join(', ')}</div>` : ''}</div>`; }).join('') || '<p>Nothing waiting to ship.</p>'}</div>`;
+  const bulk = () => {
+    const sel = [...SEL].map(orderByKey).filter(Boolean), n = st => sel.filter(o => o.status === st);
+    $('#bulk').innerHTML = sel.length ? `<div class="note" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:5"><b>${sel.length} selected</b>
+      ${n('to_print').length ? `<button class="b alt" data-b="printing">Start printing (${n('to_print').length})</button>` : ''}${n('printing').length ? `<button class="b alt" data-b="to_ship">Printed ✓ (${n('printing').length})</button>` : ''}
+      ${n('to_ship').length ? `<button class="b" data-b="ship">Ship with tracking (${n('to_ship').length})…</button><button class="g" data-b="quick">Shipped ✓ no tracking</button>` : ''}<button class="g" data-b="clear">Clear</button></div>` : '';
+    $('#bulk').querySelectorAll('[data-b]').forEach(b => b.onclick = () => {
+      const t = b.dataset.b;
+      if (t === 'clear') { SEL.clear(); document.querySelectorAll('.osel').forEach(c => c.checked = false); bulk(); }
+      else if (t === 'ship') shipOrders(n('to_ship').map(o => o.key));
+      else if (t === 'quick') quickShip(n('to_ship').map(o => o.key));
+      else safe(async () => { const from = t === 'printing' ? 'to_print' : 'printing'; await api('POST', '/api/orders/status', {status: t, sale_ids: n(from).flatMap(o => o.items.filter(i => i.status !== 'shipped').map(i => i.id))}); SEL.clear(); route(); });
+    });
+  };
+  document.querySelectorAll('.osel').forEach(c => c.onchange = () => { c.checked ? SEL.add(c.dataset.k) : SEL.delete(c.dataset.k); bulk(); });
+  bulk();
 }
 const orderByKey = k => ORDERS.find(o => o.key === k);
 async function moveOrder(k, st) { const o = orderByKey(k); await safe(async () => { await api('POST', '/api/orders/status', {status: st, sale_ids: o.items.filter(i => i.status !== 'shipped').map(i => i.id)}); route(); }); }
-async function shipOrder(k) {
-  const o = orderByKey(k);
+async function quickShip(keys) {
+  await safe(async () => {
+    for (const k of keys) { const o = orderByKey(k), a = packAdvice(o); await api('POST', '/api/orders/ship', {sale_ids: o.items.filter(i => i.status !== 'shipped').map(i => i.id), postage_cost: a.price ? a.price[0] : (S.default_postage_cost || 0)}); }
+    SEL.clear(); toast(`${keys.length} order${keys.length === 1 ? '' : 's'} marked shipped`); route();
+  });
+}
+async function shipOrders(keys) {
+  const os = keys.map(orderByKey).filter(Boolean);
   let carriers = [];
   if (S.etsy_can_ship) { try { carriers = await api('GET', '/api/etsy/carriers'); } catch (e) {} }
-  const canPush = S.etsy_can_ship && /^\d+$/.test(o.order_ref || '');
-  const m = modal(`<h2 style="margin-top:0">Mark order ${o.order_ref ? '#' + esc(o.order_ref) : ''} shipped</h2><div class="grid">
-    <div><label>Tracking number</label><input id="o_t"></div>
-    <div><label>Carrier</label><input id="o_c" list="o_cl" placeholder="e.g. Royal Mail"><datalist id="o_cl">${carriers.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
-    <div><label>Postage you paid (£)</label><input id="o_p" type="number" step="0.01" value="${S.default_postage_cost || ''}"></div>
-    <div class="full"><label><input type="checkbox" id="o_push" style="width:auto" ${canPush ? 'checked' : 'disabled'}> Send tracking to Etsy &amp; mark as shipped there${canPush ? '' : ' (needs Etsy order + re-authorise)'}</label></div></div>
+  const canPush = S.etsy_can_ship && os.some(o => /^\d+$/.test(o.order_ref || ''));
+  const m = modal(`<h2 style="margin-top:0">${os.length === 1 ? 'Mark order ' + (os[0].order_ref ? '#' + esc(os[0].order_ref) : '') + ' shipped' : 'Ship ' + os.length + ' orders'}</h2>
+    <div class="grid" style="margin-bottom:8px"><div><label>Carrier (applies to all)</label><input id="o_c" list="o_cl" placeholder="e.g. Royal Mail"><datalist id="o_cl">${carriers.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
+    <div><label>&nbsp;</label><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="o_push" style="width:auto" ${canPush ? 'checked' : 'disabled'}> Send tracking to Etsy${canPush ? '' : ' (needs Etsy order + re-authorise)'}</label></div></div>
+    <div style="max-height:50vh;overflow:auto">${os.map((o, i) => { const a = packAdvice(o); return `<div class="ocard" data-i="${i}"><div class="oh"><span>${o.order_ref ? '#' + esc(o.order_ref) : 'Manual'}</span><span>${o.items.map(x => x.qty + '× ' + esc(x.product)).join(', ')}</span></div>
+      <div style="display:grid;grid-template-columns:1fr 100px;gap:6px"><input class="tt" placeholder="Tracking number"><input class="tp" type="number" step="0.01" placeholder="Postage £" value="${a.price ? a.price[0].toFixed(2) : (S.default_postage_cost || '')}"></div></div>`; }).join('')}</div>
   <div class="bar" style="margin-top:14px"><button class="b" id="ok">Mark shipped</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  const first = m.querySelector('.tt'); if (first) first.focus();
+  m.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.classList.contains('tt')) { e.preventDefault(); const n = e.target.closest('.ocard').nextElementSibling; n ? n.querySelector('.tt').focus() : $('#ok', m).click(); } });
   $('#ok', m).onclick = () => safe(async () => {
-    const r = await api('POST', '/api/orders/ship', {sale_ids: o.items.filter(i => i.status !== 'shipped').map(i => i.id), tracking_code: $('#o_t', m).value, carrier: $('#o_c', m).value, postage_cost: $('#o_p', m).value, push: $('#o_push', m).checked});
-    m.remove(); if (r.warning) toast(r.warning, true); route();
+    const warns = [];
+    for (const card of m.querySelectorAll('.ocard[data-i]')) {
+      const o = os[+card.dataset.i];
+      const r = await api('POST', '/api/orders/ship', {sale_ids: o.items.filter(i => i.status !== 'shipped').map(i => i.id), tracking_code: $('.tt', card).value, carrier: $('#o_c', m).value, postage_cost: $('.tp', card).value, push: $('#o_push', m).checked && !!$('.tt', card).value});
+      if (r.warning) warns.push(r.warning);
+    }
+    m.remove(); SEL.clear(); warns.length ? toast(warns[0], true) : toast('Marked shipped'); route();
   });
 }
 
@@ -1254,6 +1331,11 @@ async function settingsView() {
     ${f('electricity_price_per_kwh', 'Electricity price per kWh (£) — used if Bambuddy has kWh but no cost', 'number')}${f('labour_rate_per_hour', 'Your hands-on rate per hour (£, optional)', 'number')}
     ${f('default_postage_cost', 'Typical postage cost you pay per order (£)', 'number')}${f('default_shipping_charged', 'Typical shipping you charge the buyer (£)', 'number')}
   </div>
+  <h2>Automatic Etsy order sync</h2>
+  <div class="grid" style="max-width:700px">
+    <div><label>Check Etsy for new orders in the background</label><select data-k="etsy_autosync"><option value="1" ${S.etsy_autosync !== '0' ? 'selected' : ''}>On</option><option value="0" ${S.etsy_autosync === '0' ? 'selected' : ''}>Off</option></select></div>
+    <div><label>Every (minutes, min 5)</label><input type="number" data-k="etsy_autosync_mins" value="${esc(S.etsy_autosync_mins)}"></div></div>
+  <p class="mute">Needs Etsy connected below. Last auto-sync: ${esc(S.etsy_autosync_status || 'not run yet')}</p>
   <h2>Automatic backup to GitHub</h2>
   <div class="grid" style="max-width:700px">
     <div><label>Enabled</label><select data-k="backup_enabled"><option value="0" ${S.backup_enabled !== '1' ? 'selected' : ''}>Off</option><option value="1" ${S.backup_enabled === '1' ? 'selected' : ''}>On</option></select></div>
@@ -1304,7 +1386,7 @@ async function settingsView() {
   });
 }
 
-const VIEWS = {dashboard, products, listings, templates, files: filesView, measures: measuresView, pricing, shipping, history: historyView, filament, stock, supplies, orders, sales, expenses, import: importView, settings: settingsView};
+const VIEWS = {dashboard, products, listings, templates, files: filesView, print: printToday, measures: measuresView, pricing, shipping, history: historyView, filament, stock, supplies, orders, sales, expenses, import: importView, settings: settingsView};
 route();
 </script>
 </body>

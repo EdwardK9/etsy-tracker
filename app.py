@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.25.0"
+VERSION = "0.26.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -58,6 +58,10 @@ DEFAULT_SETTINGS = {
     "electricity_price_per_kwh": "0.27",
     "labour_rate_per_hour": "0",
     "ship_rates": "",
+    "etsy_autosync": "1",
+    "etsy_autosync_mins": "15",
+    "etsy_autosync_last": "",
+    "etsy_autosync_status": "",
     "backup_enabled": "0",
     "backup_repo": "",
     "backup_token": "",
@@ -72,7 +76,7 @@ DEFAULT_SETTINGS = {
 }
 SECRET_KEYS = ("backup_token", "bambuddy_key", "etsy_secret", "etsy_access_token", "etsy_refresh_token", "etsy_oauth_verifier", "etsy_oauth_state")
 INTERNAL_KEYS = ("etsy_access_token", "etsy_refresh_token", "etsy_token_expires", "etsy_user_id", "etsy_shop_id",
-                 "etsy_shop_name", "backup_last", "backup_status", "etsy_oauth_state", "etsy_oauth_verifier", "etsy_last_sync", "etsy_scopes")
+                 "etsy_shop_name", "etsy_autosync_last", "etsy_autosync_status", "backup_last", "backup_status", "etsy_oauth_state", "etsy_oauth_verifier", "etsy_last_sync", "etsy_scopes")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
@@ -215,7 +219,7 @@ PRODUCT_MIGRATIONS = [
     ("l_materials", "TEXT DEFAULT ''"), ("l_qty", "INTEGER DEFAULT 0"), ("taxonomy_id", "INTEGER"),
     ("taxonomy_name", "TEXT DEFAULT ''"), ("etsy_listing_id", "INTEGER"), ("etsy_listing_url", "TEXT DEFAULT ''"),
     ("plate_energy", "REAL DEFAULT 0"), ("labour_minutes", "INTEGER DEFAULT 0"),
-    ("model_url", "TEXT DEFAULT ''"),
+    ("model_url", "TEXT DEFAULT ''"), ("made_to_order", "INTEGER DEFAULT 0"), ("restock_to", "INTEGER DEFAULT 0"),
     ("l_return_policy", "TEXT DEFAULT ''"), ("l_shop_section", "TEXT DEFAULT ''"),
     ("l_ship_profile", "TEXT DEFAULT ''"), ("l_readiness", "TEXT DEFAULT ''"),
     ("item_l", "REAL DEFAULT 0"), ("item_w", "REAL DEFAULT 0"), ("item_h", "REAL DEFAULT 0"),
@@ -471,6 +475,8 @@ def api_products():
              num(d.get("extra_cost")), int(num(d.get("print_minutes"))), int(num(d.get("reorder_at"))),
              1 if d.get("active", 1) else 0, d.get("notes", ""), num(d.get("plate_energy")), int(num(d.get("labour_minutes")))))
         pid = cur.lastrowid
+        db().execute("UPDATE products SET made_to_order=?, restock_to=? WHERE id=?",
+                     (1 if d.get("made_to_order") else 0, int(num(d.get("restock_to"))), pid))
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (pid, "price", num(d.get("price"))))
         p = one("SELECT * FROM products WHERE id=?", (pid,))
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (pid, "cost", unit_cost_of(p)))
@@ -507,7 +513,9 @@ def api_product(pid):
     for k in ("price", "plate_grams", "plate_cost", "extra_cost", "plate_energy"):
         if k in d:
             new[k] = num(d[k])
-    for k in ("items_per_plate", "print_minutes", "reorder_at", "labour_minutes"):
+    if "made_to_order" in d:
+        new["made_to_order"] = 1 if d["made_to_order"] else 0
+    for k in ("items_per_plate", "print_minutes", "reorder_at", "labour_minutes", "restock_to"):
         if k in d:
             new[k] = max(int(num(d[k])), 1 if k == "items_per_plate" else 0)
     if "archive_id" in d:
@@ -521,10 +529,11 @@ def api_product(pid):
 def save_product(new, old):
     db().execute(
         """UPDATE products SET name=?,sku=?,price=?,archive_id=?,archive_name=?,plate_grams=?,plate_cost=?,
-           items_per_plate=?,extra_cost=?,print_minutes=?,reorder_at=?,active=?,notes=?,plate_energy=?,labour_minutes=? WHERE id=?""",
+           items_per_plate=?,extra_cost=?,print_minutes=?,reorder_at=?,active=?,notes=?,plate_energy=?,labour_minutes=?,made_to_order=?,restock_to=? WHERE id=?""",
         (new["name"], new["sku"], new["price"], new["archive_id"], new["archive_name"], new["plate_grams"],
          new["plate_cost"], new["items_per_plate"], new["extra_cost"], new["print_minutes"], new["reorder_at"],
-         new["active"], new["notes"], new["plate_energy"], new["labour_minutes"], new["id"]))
+         new["active"], new["notes"], new["plate_energy"], new["labour_minutes"], new.get("made_to_order") or 0,
+         new.get("restock_to") or 0, new["id"]))
     if abs(num(new["price"]) - num(old["price"])) > 1e-9:
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (new["id"], "price", new["price"]))
     if abs(unit_cost_of(new) - unit_cost_of(old)) > 1e-9:
@@ -2233,6 +2242,83 @@ def api_measurement(iid):
     return jsonify({"ok": True})
 
 
+# ---------------------------------------------------------------- print today / alerts / auto-sync
+def print_today():
+    """What to print: waiting orders (grouped by colour) + top-ups for stocked items. Print-per-order items never get top-ups."""
+    out = []
+    for p in rows("SELECT * FROM products WHERE active=1 ORDER BY name COLLATE NOCASE"):
+        waiting = rows("""SELECT variation, SUM(qty) AS q, MIN(date) AS oldest, MAX(status='printing') AS started FROM sales
+                          WHERE product_id=? AND status IN ('to_print','printing') GROUP BY variation ORDER BY oldest""", (p["id"],))
+        owed = sum(w["q"] for w in waiting)
+        stock = stock_of(p["id"])  # negative = orders waiting for prints
+        topup = 0
+        if not p["made_to_order"] and p["reorder_at"] and stock <= p["reorder_at"]:
+            target = p["restock_to"] or max(p["reorder_at"] * 2, p["reorder_at"] + 1)
+            topup = max(target - (stock + owed), 0)  # stock + owed = units made and not allocated
+        if not owed and not topup:
+            continue
+        per_g = num(p["plate_grams"]) / max(p["items_per_plate"] or 1, 1)
+        per = max(p["items_per_plate"] or 1, 1)
+        out.append({"product_id": p["id"], "name": p["name"], "made_to_order": p["made_to_order"], "stock": stock,
+                    "sale_ids": [r["id"] for r in rows("SELECT id FROM sales WHERE product_id=? AND status='to_print'", (p["id"],))],
+                    "printing_ids": [r["id"] for r in rows("SELECT id FROM sales WHERE product_id=? AND status='printing'", (p["id"],))],
+                    "orders": [{"variation": w["variation"], "qty": w["q"], "started": bool(w["started"]), "oldest": w["oldest"]} for w in waiting],
+                    "owed": owed, "topup": topup, "total": owed + topup, "grams": round(per_g * (owed + topup), 1),
+                    "plates": -(-(owed + topup) // per), "minutes": int(num(p["print_minutes"]) * -(-(owed + topup) // per))})
+    return out
+
+
+@app.route("/api/print-today")
+def api_print_today():
+    return jsonify(print_today())
+
+
+@app.route("/api/product-supplies")
+def api_all_product_supplies():
+    return jsonify(rows("SELECT product_id,supply_id,qty FROM product_supplies"))
+
+
+@app.route("/api/alerts")
+def api_alerts():
+    al = []
+    for s in supply_rows():
+        if s["active"] and s["status"] == "order_now":
+            al.append({"kind": "supply", "text": "Order more " + s["name"] + (" — out" if s["remaining"] <= 0 else " — %s left" % s["remaining"]), "view": "supplies"})
+    old = rows("""SELECT COUNT(DISTINCT COALESCE(NULLIF(order_ref,''),'s'||id)) AS n FROM sales
+                  WHERE status IN ('to_print','printing') AND date<=date('now','-3 day')""")[0]["n"]
+    if old:
+        al.append({"kind": "orders", "text": "%d order%s waiting to be printed for 3+ days" % (old, "" if old == 1 else "s"), "view": "orders"})
+    old2 = rows("""SELECT COUNT(DISTINCT COALESCE(NULLIF(order_ref,''),'s'||id)) AS n FROM sales
+                   WHERE status='to_ship' AND date<=date('now','-2 day')""")[0]["n"]
+    if old2:
+        al.append({"kind": "orders", "text": "%d order%s ready to ship for 2+ days" % (old2, "" if old2 == 1 else "s"), "view": "orders"})
+    return jsonify(al)
+
+
+def _autosync_loop():
+    while True:
+        time.sleep(300)
+        try:
+            con = sqlite3.connect(DB_PATH)
+            s = {r[0]: r[1] for r in con.execute("SELECT key,value FROM settings")}
+            con.close()
+            if s.get("etsy_autosync", "1") == "1" and s.get("etsy_shop_id") and s.get("etsy_refresh_token"):
+                every = max(5.0, float(s.get("etsy_autosync_mins") or 15)) * 60
+                if time.time() - float(s.get("etsy_autosync_last") or 0) >= every:
+                    with app.test_request_context("/api/etsy/sync", method="POST", json={}):
+                        resp = api_etsy_sync()
+                        r = resp[0] if isinstance(resp, tuple) else resp
+                        ok = r.status_code == 200
+                        j = r.get_json() or {}
+                        msg = ("OK %s — %s new lines" % (datetime.now().strftime("%d %b %H:%M"), j.get("added", 0))) if ok else \
+                              ("FAILED %s — %s" % (datetime.now().strftime("%d %b %H:%M"), j.get("error", "?")))
+                        set_setting("etsy_autosync_last", str(int(time.time())))
+                        set_setting("etsy_autosync_status", msg)
+                        db().commit()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------- GitHub backup
 import threading
 import gzip
@@ -2404,6 +2490,7 @@ def seed_measurements():
 init_db()
 seed_measurements()
 threading.Thread(target=_backup_loop, daemon=True).start()
+threading.Thread(target=_autosync_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5055)))
