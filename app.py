@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.23.2"
+VERSION = "0.24.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -2067,6 +2067,47 @@ def api_supply_restock(sid):
             db().execute("UPDATE supplies SET unit_cost=? WHERE id=?", (round(cost / qty, 4), sid))
     db().commit()
     return jsonify({"ok": True})
+
+
+@app.route("/api/supplies/receive", methods=["POST"])
+def api_supplies_receive():
+    """One-shot 'order arrived': adds stock to every line, updates unit costs, logs ONE expense."""
+    d = request.get_json(force=True)
+    lines = [l for l in (d.get("lines") or []) if num(l.get("qty")) > 0]
+    if not lines:
+        return jsonify({"error": "Enter a quantity on at least one line"}), 400
+    delivery = num(d.get("delivery"))
+    goods = sum(num(l.get("cost")) for l in lines)
+    mx = one("SELECT COALESCE(MAX(id),0) AS m FROM sales")["m"]
+    cur = {r["id"]: r for r in supply_rows()}
+    names = []
+    for l in lines:
+        qty, cost = num(l.get("qty")), num(l.get("cost"))
+        sid = l.get("supply_id")
+        if sid and int(sid) in cur:
+            sid = int(sid)
+            new = max(cur[sid]["remaining"], 0) + qty
+            nm = cur[sid]["name"]
+        else:
+            nm = (l.get("name") or "").strip()
+            if not nm:
+                continue
+            sid = db().execute("INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at) VALUES(?,?,?,?,?,?)",
+                               (nm, (l.get("link") or "").strip(), 0, 0, mx, today())).lastrowid
+            new = qty
+        db().execute("UPDATE supplies SET stock=?, counted_sale_id=?, counted_at=? WHERE id=?", (new, mx, today(), sid))
+        if cost > 0:
+            landed = cost + (delivery * cost / goods if goods > 0 else 0)  # share delivery across lines by value
+            db().execute("UPDATE supplies SET unit_cost=? WHERE id=?", (round(landed / qty, 4), sid))
+        names.append("%s x%g" % (nm, qty))
+    total = round(goods + delivery, 2)
+    if total > 0:
+        desc = (d.get("note") or "").strip()
+        desc = (desc + ": " if desc else "Supplies order: ") + ", ".join(names)
+        db().execute("INSERT INTO expenses(date,category,description,amount) VALUES(?,?,?,?)",
+                     (d.get("date") or today(), "Packaging", desc[:300], total))
+    db().commit()
+    return jsonify({"ok": True, "lines": len(names), "expense": total})
 
 
 @app.route("/api/products/<int:pid>/supplies", methods=["GET", "PUT"])
