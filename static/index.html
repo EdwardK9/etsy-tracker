@@ -655,7 +655,7 @@ function measDetail() {
     <div id="m_rows">${m.values.map(row).join('')}</div>
     <button class="g" type="button" id="m_add">+ Add row</button>
     <div style="margin-top:14px"><label>Notes</label><textarea id="m_notes" rows="3">${esc(m.notes)}</textarea></div>
-    <div style="margin-top:14px"><label>Photos</label><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">${(m.photos || []).map(id => `<span style="position:relative"><a href="/api/measure-photos/${id}/file" target="_blank"><img src="/api/measure-photos/${id}/file" loading="lazy" style="width:96px;height:96px;object-fit:cover;border-radius:9px;border:1px solid var(--line)"></a><a data-dp="${id}" style="position:absolute;top:-6px;right:-6px;cursor:pointer;background:var(--bad);color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;font-size:12px;line-height:18px">×</a></span>`).join('') || '<span class="mute" style="font-size:12px">No photos yet</span>'}</div>
+    <div id="m_dz" style="margin-top:14px;border:1px dashed var(--line);border-radius:12px;padding:10px"><label>Photos <span class="mute" style="font-weight:400">— drag photos here, paste (Ctrl+V), or use the button</span></label><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">${(m.photos || []).map(id => `<span style="position:relative"><a href="/api/measure-photos/${id}/file" target="_blank"><img src="/api/measure-photos/${id}/file" loading="lazy" style="width:96px;height:96px;object-fit:cover;border-radius:9px;border:1px solid var(--line)"></a><a data-dp="${id}" style="position:absolute;top:-6px;right:-6px;cursor:pointer;background:var(--bad);color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;font-size:12px;line-height:18px">×</a></span>`).join('') || '<span class="mute" style="font-size:12px">No photos yet</span>'}</div>
       <label class="b alt" style="cursor:pointer;margin:0;display:inline-block">+ Add photos<input type="file" id="m_up" multiple accept=".jpg,.jpeg,.png,.webp,.gif,.heic,.heif" hidden></label></div>
     <div class="bar" style="margin:14px 0 0"><button class="g" id="m_next">Next item →</button><a class="b alt" href="/api/measurements/${m.id}/pdf">Export PDF</a><span class="sp"></span><button class="g" id="m_dup">Duplicate</button><button class="g" id="m_del">Delete</button></div></div>`;
   let t;
@@ -671,7 +671,13 @@ function measDetail() {
     }), 400);
   };
   box.oninput = save; box.onchange = e => { if (e.target.type !== 'file') save(); };
-  $('#m_up').onchange = e => safe(async () => { const fd = new FormData(); [...e.target.files].forEach(f => fd.append('files', f)); toast('Uploading…'); const r = await fetch(`/api/measurements/${m.id}/photos`, {method: 'POST', body: fd}); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); measuresView(); });
+  const upPhotos = files => { files = [...files].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif|heic|heif)$/i.test(f.name)); if (!files.length) return; return safe(async () => { const fd = new FormData(); files.forEach(f => fd.append('files', f)); toast('Uploading…'); const r = await fetch(`/api/measurements/${m.id}/photos`, {method: 'POST', body: fd}); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); measuresView(); }); };
+  $('#m_up').onchange = e => upPhotos(e.target.files);
+  const dz = $('#m_dz');
+  ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.style.borderColor = 'var(--acc)'; }));
+  ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.style.borderColor = 'var(--line)'; }));
+  dz.addEventListener('drop', e => upPhotos(e.dataTransfer.files));
+  window.onpaste = e => { if ($('#m_dz')) upPhotos([...(e.clipboardData || {items: []}).items].filter(i => i.kind === 'file').map(i => i.getAsFile())); };
   box.querySelectorAll('[data-dp]').forEach(b => b.onclick = () => confirm('Delete this photo?') && safe(async () => { await api('DELETE', `/api/measure-photos/${b.dataset.dp}`); measuresView(); }));
   box.onkeydown = e => { if (e.key === 'Enter' && e.target.classList.contains('mv')) { e.preventDefault(); const r = e.target.closest('.mrow').nextElementSibling; (r ? r.querySelector('.mv') : $('#m_notes')).focus(); } };
   box.onclick = e => { const b = e.target.closest('button.g[title]'); if (b) { b.parentNode.remove(); save(); } };
