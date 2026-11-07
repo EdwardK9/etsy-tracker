@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.31.0"
+VERSION = "0.32.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -230,7 +230,7 @@ PRODUCT_MIGRATIONS = [
     ("l_return_policy", "TEXT DEFAULT ''"), ("l_shop_section", "TEXT DEFAULT ''"),
     ("l_ship_profile", "TEXT DEFAULT ''"), ("l_readiness", "TEXT DEFAULT ''"),
     ("item_l", "REAL DEFAULT 0"), ("item_w", "REAL DEFAULT 0"), ("item_h", "REAL DEFAULT 0"),
-    ("pack_qty", "INTEGER DEFAULT 1"), ("pack_g", "REAL DEFAULT 0"), ("pack_l", "REAL DEFAULT 0"), ("pack_w", "REAL DEFAULT 0"), ("pack_h", "REAL DEFAULT 0"),
+    ("pack_qty", "INTEGER DEFAULT 1"), ("var_map", "TEXT DEFAULT ''"), ("pack_g", "REAL DEFAULT 0"), ("pack_l", "REAL DEFAULT 0"), ("pack_w", "REAL DEFAULT 0"), ("pack_h", "REAL DEFAULT 0"),
     ("postage_cost", "REAL DEFAULT 0"),
     ("etsy_state", "TEXT DEFAULT ''"), ("etsy_views", "INTEGER DEFAULT 0"), ("etsy_favs", "INTEGER DEFAULT 0"),
     ("etsy_qty", "INTEGER"), ("etsy_synced", "TEXT DEFAULT ''"),
@@ -241,7 +241,7 @@ TEMPLATE_MIGRATIONS = [
     ("var_material", "TEXT DEFAULT 'PLA'"), ("personalisation", "TEXT DEFAULT ''"),
 ]
 SALE_MIGRATIONS = [("status", "TEXT DEFAULT 'shipped'"), ("variation", "TEXT DEFAULT ''"),
-                   ("tracking", "TEXT DEFAULT ''"), ("shipped_at", "TEXT DEFAULT ''")]
+                   ("tracking", "TEXT DEFAULT ''"), ("shipped_at", "TEXT DEFAULT ''"), ("mult", "REAL DEFAULT 1")]
 IMG_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "images")
 FILE_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "files")
 MPHOTO_DIR = os.path.join(os.path.dirname(DB_PATH) or ".", "mphotos")
@@ -389,9 +389,27 @@ def unit_cost_of(p):
     return round(per_plate / ipp * pq + num(p.get("extra_cost")) + num(p.get("labour_minutes")) / 60.0 * labour_rate(), 4)
 
 
+def parse_var_map(raw):
+    try:
+        v = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return [{"match": str(x.get("match", "")).strip(), "mult": max(num(x.get("mult"), 1), 1)} for x in v if str(x.get("match", "")).strip()]
+
+
+def variant_mult(p, var_text):
+    """Items used per unit sold, from the product's pack options (e.g. 'Quantity: 4' -> 4). Longest matching text wins."""
+    vt = (var_text or "").lower()
+    best = None
+    for o in parse_var_map(p.get("var_map")):
+        if o["match"].lower() in vt and (best is None or len(o["match"]) > len(best["match"])):
+            best = o
+    return best["mult"] if best else 1
+
+
 def stock_of(pid):
     r = one("""SELECT COALESCE((SELECT SUM(qty_good) FROM batches WHERE product_id=?),0) AS made,
-                      COALESCE((SELECT SUM(qty) FROM sales WHERE product_id=?),0) AS sold""", (pid, pid))
+                      COALESCE((SELECT SUM(qty*mult) FROM sales WHERE product_id=?),0) AS sold""", (pid, pid))
     return r["made"] - r["sold"]
 
 
@@ -402,7 +420,7 @@ def initial_status(pid):
 
 def release_backorders(pid):
     """After printing: move the oldest waiting lines to 'to_ship' while stock covers them."""
-    waiting = rows("SELECT id,qty FROM sales WHERE product_id=? AND status IN ('to_print','printing') ORDER BY date,id", (pid,))
+    waiting = rows("SELECT id,qty*mult AS qty FROM sales WHERE product_id=? AND status IN ('to_print','printing') ORDER BY date,id", (pid,))
     if not waiting:
         return
     backlog = sum(w["qty"] for w in waiting)
@@ -466,13 +484,14 @@ def product_rows():
       SELECT p.*,
         COALESCE((SELECT SUM(qty_good) FROM batches b WHERE b.product_id=p.id),0) AS made,
         COALESCE((SELECT SUM(qty_failed) FROM batches b WHERE b.product_id=p.id),0) AS failed,
-        COALESCE((SELECT SUM(qty) FROM sales s WHERE s.product_id=p.id),0) AS sold,
+        COALESCE((SELECT SUM(qty*mult) FROM sales s WHERE s.product_id=p.id),0) AS sold,
         (SELECT COUNT(*) FROM product_images i WHERE i.product_id=p.id) AS n_images
       FROM products p ORDER BY p.active DESC, p.name COLLATE NOCASE""")
     pack = {r["product_id"]: r["c"] for r in rows(
         "SELECT ps.product_id, SUM(ps.qty*s.unit_cost) AS c FROM product_supplies ps JOIN supplies s ON s.id=ps.supply_id GROUP BY ps.product_id")}
     for p in ps:
         p["stock"] = p["made"] - p["sold"]
+        p["var_map"] = parse_var_map(p.get("var_map"))
         p["unit_cost"] = unit_cost_of(p)          # print cost only (used for stock value / sale snapshots)
         p["pack_cost"] = round(pack.get(p["id"]) or 0, 4)  # packaging from Supplies (bought via expenses, so not in sale COGS)
         p["full_cost"] = round(p["unit_cost"] + p["pack_cost"], 4)
@@ -496,6 +515,8 @@ def api_products():
         pid = cur.lastrowid
         db().execute("UPDATE products SET made_to_order=?, restock_to=?, pack_qty=? WHERE id=?",
                      (1 if d.get("made_to_order") else 0, int(num(d.get("restock_to"))), max(int(num(d.get("pack_qty"), 1)), 1), pid))
+        if "var_map" in d:
+            db().execute("UPDATE products SET var_map=? WHERE id=?", (json.dumps(parse_var_map(json.dumps(d["var_map"]))), pid))
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (pid, "price", num(d.get("price"))))
         p = one("SELECT * FROM products WHERE id=?", (pid,))
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (pid, "cost", unit_cost_of(p)))
@@ -537,6 +558,8 @@ def api_product(pid):
     for k in ("items_per_plate", "print_minutes", "reorder_at", "labour_minutes", "restock_to", "pack_qty"):
         if k in d:
             new[k] = max(int(num(d[k])), 1 if k in ("items_per_plate", "pack_qty") else 0)
+    if "var_map" in d:
+        new["var_map"] = json.dumps(parse_var_map(json.dumps(d["var_map"])))
     if "archive_id" in d:
         new["archive_id"] = d["archive_id"] or None
     if "active" in d:
@@ -553,6 +576,10 @@ def save_product(new, old):
          new["plate_cost"], new["items_per_plate"], new["extra_cost"], new["print_minutes"], new["reorder_at"],
          new["active"], new["notes"], new["plate_energy"], new["labour_minutes"], new.get("made_to_order") or 0,
          new.get("restock_to") or 0, max(int(num(new.get("pack_qty"), 1)), 1), new["id"]))
+    if "var_map" in new:
+        db().execute("UPDATE products SET var_map=? WHERE id=?", (new["var_map"], new["id"]))
+        for sl in rows("SELECT id,variation FROM sales WHERE product_id=?", (new["id"],)):
+            db().execute("UPDATE sales SET mult=? WHERE id=?", (variant_mult(new, sl["variation"]), sl["id"]))
     if abs(num(new["price"]) - num(old["price"])) > 1e-9:
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (new["id"], "price", new["price"]))
     if abs(unit_cost_of(new) - unit_cost_of(old)) > 1e-9:
@@ -1142,8 +1169,8 @@ def api_etsy_sync():
                     qty, price, ship, disc, offsite, fees = sale_values(d, p, s)
                     db().execute(
                         """INSERT INTO sales(date,order_ref,product_id,qty,unit_price,shipping_charged,discount,postage_cost,
-                           offsite_ad,fees,unit_cost,source,variation,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (date, order, p["id"], qty, price, ship, disc, 0, 0, fees, unit_cost_of(p), "etsy-api", var_text, "shipped"))
+                           offsite_ad,fees,unit_cost,source,variation,status,mult) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (date, order, p["id"], qty, price, ship, disc, 0, 0, fees, round(unit_cost_of(p) * variant_mult(p, var_text), 4), "etsy-api", var_text, "shipped", variant_mult(p, var_text)))
                     sid = db().execute("SELECT last_insert_rowid()").fetchone()[0]
                     if not r.get("is_shipped"):
                         db().execute("UPDATE sales SET status=? WHERE id=?", (initial_status(p["id"]), sid))
@@ -1826,7 +1853,7 @@ PIPE = ["to_print", "printing", "to_ship", "shipped"]
 
 @app.route("/api/orders")
 def api_orders():
-    ls = rows("""SELECT s.id,s.date,s.order_ref,s.product_id,s.qty,s.status,s.variation,s.tracking,s.shipped_at,s.notes,
+    ls = rows("""SELECT s.id,s.date,s.order_ref,s.product_id,s.qty,s.mult,s.status,s.variation,s.tracking,s.shipped_at,s.notes,
                  (s.unit_price*s.qty + s.shipping_charged - s.discount) AS revenue, p.name AS product
                  FROM sales s JOIN products p ON p.id=s.product_id ORDER BY s.date DESC, s.id DESC""")
     orders = {}
@@ -2278,7 +2305,7 @@ def print_today():
     """What to print: waiting orders (grouped by colour) + top-ups for stocked items. Print-per-order items never get top-ups."""
     out = []
     for p in rows("SELECT * FROM products WHERE active=1 ORDER BY name COLLATE NOCASE"):
-        waiting = rows("""SELECT variation, SUM(qty) AS q, MIN(date) AS oldest, MAX(status='printing') AS started FROM sales
+        waiting = rows("""SELECT variation, SUM(qty*mult) AS q, MIN(date) AS oldest, MAX(status='printing') AS started FROM sales
                           WHERE product_id=? AND status IN ('to_print','printing') GROUP BY variation ORDER BY oldest""", (p["id"],))
         owed = sum(w["q"] for w in waiting)
         stock = stock_of(p["id"])  # negative = orders waiting for prints
