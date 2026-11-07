@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.30.0"
+VERSION = "0.30.1"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -327,6 +327,8 @@ def init_db():
             con.execute(f"ALTER TABLE supplies ADD COLUMN {col} REAL DEFAULT 0")
     if "pack_size" not in have_sup:
         con.execute("ALTER TABLE supplies ADD COLUMN pack_size REAL DEFAULT 1")
+    if "box_outer" not in have_sup:
+        con.execute("ALTER TABLE supplies ADD COLUMN box_outer INTEGER DEFAULT 0")
     if "unit" not in have_sup:
         con.execute("ALTER TABLE supplies ADD COLUMN unit TEXT DEFAULT ''")
     if "roll_width" not in have_sup:
@@ -1945,12 +1947,12 @@ def api_push_stock(pid):
 # Prices are what YOU pay (Royal Mail 1st/2nd stamp prices are VAT-exempt; Tracked/Evri include VAT).
 # Seeded from published rates (Royal Mail parcel prices from 5 Oct 2026); Tracked and Evri are approximate - editable in the app.
 SHIP_DEFAULT = [
-    {"name": "Royal Mail 2nd Class Large Letter", "dims": [35.3, 25, 2.5], "tracked": False, "tiers": [[100, 1.55], [250, 1.90], [500, 2.40], [750, 2.70]]},
-    {"name": "Royal Mail 1st Class Large Letter", "dims": [35.3, 25, 2.5], "tracked": False, "tiers": [[100, 3.30], [750, 3.60]]},
-    {"name": "Royal Mail 2nd Class Small Parcel", "dims": [45, 35, 16], "tracked": False, "tiers": [[2000, 4.60]]},
-    {"name": "Royal Mail 1st Class Small Parcel", "dims": [45, 35, 16], "tracked": False, "tiers": [[2000, 5.90]]},
-    {"name": "Royal Mail 2nd Class Medium Parcel", "dims": [61, 46, 46], "tracked": False, "tiers": [[2000, 7.50], [10000, 9.50], [20000, 14.20]]},
-    {"name": "Royal Mail 1st Class Medium Parcel", "dims": [61, 46, 46], "tracked": False, "tiers": [[2000, 8.70], [10000, 10.90], [20000, 16.90]]},
+    {"name": "Royal Mail 2nd Class Large Letter (est.)", "etsy": True, "dims": [35.3, 25, 2.5], "tracked": False, "tiers": [[100, 1.55], [250, 1.90], [500, 2.40], [750, 2.70]]},
+    {"name": "Royal Mail 1st Class Large Letter (est.)", "etsy": True, "dims": [35.3, 25, 2.5], "tracked": False, "tiers": [[100, 3.30], [750, 3.60]]},
+    {"name": "Royal Mail 2nd Class Small Parcel (est.)", "etsy": True, "dims": [45, 35, 16], "tracked": False, "tiers": [[2000, 4.60]]},
+    {"name": "Royal Mail 1st Class Small Parcel (est.)", "etsy": True, "dims": [45, 35, 16], "tracked": False, "tiers": [[2000, 5.90]]},
+    {"name": "Royal Mail 2nd Class Medium Parcel (est.)", "etsy": True, "dims": [61, 46, 46], "tracked": False, "tiers": [[2000, 7.50], [10000, 9.50], [20000, 14.20]]},
+    {"name": "Royal Mail 1st Class Medium Parcel (est.)", "etsy": True, "dims": [61, 46, 46], "tracked": False, "tiers": [[2000, 8.70], [10000, 10.90], [20000, 16.90]]},
     {"name": "Royal Mail Tracked 48 Large Letter (est.)", "etsy": True, "dims": [35.3, 25, 2.5], "tracked": True, "tiers": [[1000, 2.85]]},
     {"name": "Royal Mail Tracked 48 Small Parcel (est.)", "etsy": True, "dims": [45, 35, 16], "tracked": True, "tiers": [[2000, 3.65]]},
     {"name": "Royal Mail Tracked 48 Medium Parcel (est.)", "etsy": True, "dims": [61, 46, 46], "tracked": True, "tiers": [[2000, 5.55], [10000, 7.35], [20000, 11.85]]},
@@ -2047,13 +2049,13 @@ def api_supplies():
         if not (d.get("name") or "").strip():
             return jsonify({"error": "Give it a name."}), 400
         mx = one("SELECT COALESCE(MAX(id),0) AS m FROM sales")["m"]
-        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes,box_l,box_w,box_h,box_g,pack_size,pack_name,unit,roll_width)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        db().execute("""INSERT INTO supplies(name,link,unit_cost,stock,counted_sale_id,counted_at,lead_days,per_order,manual_week,notes,box_l,box_w,box_h,box_g,pack_size,pack_name,unit,roll_width,box_outer)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (d["name"].strip(), d.get("link", ""), num(d.get("unit_cost")), num(d.get("stock")), mx, today(),
                       int(num(d.get("lead_days"))), num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""),
                       num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g")),
                       max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip(),
-                      (d.get("unit") or "").strip(), num(d.get("roll_width"))))
+                      (d.get("unit") or "").strip(), num(d.get("roll_width")), 1 if d.get("box_outer") else 0))
         db().commit()
         return jsonify({"ok": True})
     return jsonify(supply_rows())
@@ -2067,11 +2069,11 @@ def api_supply(sid):
         db().commit()
         return jsonify({"ok": True})
     d = request.get_json(force=True)
-    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=?,box_l=?,box_w=?,box_h=?,box_g=?,pack_size=?,pack_name=?,unit=?,roll_width=? WHERE id=?""",
+    db().execute("""UPDATE supplies SET name=?,link=?,unit_cost=?,lead_days=?,per_order=?,manual_week=?,notes=?,active=?,box_l=?,box_w=?,box_h=?,box_g=?,pack_size=?,pack_name=?,unit=?,roll_width=?,box_outer=? WHERE id=?""",
                  (d.get("name", "").strip(), d.get("link", ""), num(d.get("unit_cost")), int(num(d.get("lead_days"))),
                   num(d.get("per_order")), num(d.get("manual_week")), d.get("notes", ""), 1 if d.get("active", True) else 0,
                   num(d.get("box_l")), num(d.get("box_w")), num(d.get("box_h")), num(d.get("box_g")),
-                  max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip(), (d.get("unit") or "").strip(), num(d.get("roll_width")), sid))
+                  max(num(d.get("pack_size"), 1), 1), (d.get("pack_name") or "").strip(), (d.get("unit") or "").strip(), num(d.get("roll_width")), 1 if d.get("box_outer") else 0, sid))
     if d.get("stock") not in (None, ""):
         cur = next((r for r in supply_rows() if r["id"] == sid), None)
         if cur and abs(cur["remaining"] - num(d["stock"])) > 1e-9:

@@ -374,11 +374,11 @@ function editProduct(id) {
     if (dims.every(x => x > 0)) {
       const vol = dims[0] * dims[1] * dims[2] * 1.3, a = [...dims].sort((x, y) => y - x);
       const fits = bx => { const b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]) && vol <= bx.d[0] * bx.d[1] * bx.d[2]; };
-      const own = SUP.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, d: [s.box_l, s.box_w, s.box_h], g: s.box_g || 0, cost: s.unit_cost || 0, own: true, sid: s.id}));
-      const gen = STD_BOXES.map(([name, l, w, hh, g]) => ({name, d: [l, w, hh], g, cost: 0, own: false}));
+      const own = SUP.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, ...boxOf(s), g: s.box_g || 0, cost: s.unit_cost || 0, own: true, sid: s.id}));
+      const gen = STD_BOXES.map(b => ({...stdBox(b), cost: 0}));
       boxes = [...own, ...gen].filter(fits).map(bx => {
-        const g = Math.round(itemG + bx.g), op = shipOptions(D.R.filter(x => x.etsy), g, bx.d.map(x => x + 1)).filter(x => x.ok).sort((x, y) => x.price - y.price)[0];
-        return {...bx, weight: g, price: op ? op.price : null, svc: op ? op.name.replace(' (est.)', '') : ''};
+        const g = Math.round(itemG + bx.g), op = bestRate(D.R, g, bx.od);
+        return {...bx, weight: g, price: op ? op.price : null, svc: svcLabel(op), why: op ? '' : whyNoRate(D.R, g, bx.od)};
       }).sort((x, y) => (x.own === y.own ? 0 : x.own ? -1 : 1) || ((x.price ?? 99) - (y.price ?? 99)) || (x.d[0] * x.d[1] * x.d[2] - y.d[0] * y.d[1] * y.d[2]));
       if (!boxes.length) hint = 'No box fits that item size — check the L × W × H, or add a bigger box under Stock → Supplies.';
     } else hint = 'No boxes listed because the printed item size is empty. Close this, fill in “Printed item size L × W × H” on the product form, then press Calculate again. (Add your own boxes under Stock → Supplies.)';
@@ -1044,14 +1044,15 @@ function editSupply(s) {
     <div><label>Used on every order (e.g. 1 label)</label><input id="u_po" type="number" step="0.1" value="${e.per_order || 0}"></div>
     <div><label>Expected use per week (optional)</label><input id="u_mw" type="number" step="0.5" value="${e.manual_week || 0}"></div>
     <div class="full"><label>If this is a box/mailer: inner size L × W × H (cm) and empty weight (g) — used to suggest boxes for orders</label>
-      <div style="display:flex;gap:6px"><input id="u_bl" type="number" step="0.1" placeholder="L" value="${e.box_l || ''}"><input id="u_bw" type="number" step="0.1" placeholder="W" value="${e.box_w || ''}"><input id="u_bh" type="number" step="0.1" placeholder="H" value="${e.box_h || ''}"><input id="u_bg" type="number" step="1" placeholder="g" value="${e.box_g || ''}"></div></div>
+      <div style="display:flex;gap:6px"><input id="u_bl" type="number" step="0.1" placeholder="L" value="${e.box_l || ''}"><input id="u_bw" type="number" step="0.1" placeholder="W" value="${e.box_w || ''}"><input id="u_bh" type="number" step="0.1" placeholder="H" value="${e.box_h || ''}"><input id="u_bg" type="number" step="1" placeholder="g" value="${e.box_g || ''}"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><select id="u_bo" style="width:auto"><option value="0" ${e.box_outer ? '' : 'selected'}>Sizes are inside the box</option><option value="1" ${e.box_outer ? 'selected' : ''}>Sizes are outside the box</option></select><span class="mute" style="font-size:12px">In centimetres (not mm) — e.g. a PIP box 35 × 25 × 2.5</span></div></div>
     <div class="full"><label>Notes</label><input id="u_no" value="${esc(e.notes)}"></div>
     ${s ? `<div><label><input type="checkbox" id="u_a" style="width:auto" ${e.active ? 'checked' : ''}> Active</label></div>` : ''}</div>
   <div class="bar" style="margin-top:14px"><button class="b" id="ok">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span>${s ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
   $('#u_mode', m).onchange = () => { const r = $('#u_mode', m).value === 'cm'; $('#u_each', m).style.display = r ? 'none' : ''; $('#u_roll', m).style.display = r ? '' : 'none'; };
   $('#ok', m).onclick = () => safe(async () => {
     const roll = $('#u_mode', m).value === 'cm';
-    const body = {unit: roll ? 'cm' : '', roll_width: roll ? $('#u_rw', m).value : 0, pack_size: roll ? (+$('#u_rl', m).value || 0) * 100 : $('#u_ps', m).value, pack_name: roll ? 'roll' : $('#u_pn', m).value, name: $('#u_n', m).value, link: $('#u_l', m).value, stock: $('#u_s', m).value, unit_cost: $('#u_c', m).value, lead_days: $('#u_ld', m).value, per_order: $('#u_po', m).value, manual_week: $('#u_mw', m).value, notes: $('#u_no', m).value, box_l: $('#u_bl', m).value, box_w: $('#u_bw', m).value, box_h: $('#u_bh', m).value, box_g: $('#u_bg', m).value, active: s ? $('#u_a', m).checked : true};
+    const body = {unit: roll ? 'cm' : '', roll_width: roll ? $('#u_rw', m).value : 0, pack_size: roll ? (+$('#u_rl', m).value || 0) * 100 : $('#u_ps', m).value, pack_name: roll ? 'roll' : $('#u_pn', m).value, name: $('#u_n', m).value, link: $('#u_l', m).value, stock: $('#u_s', m).value, unit_cost: $('#u_c', m).value, lead_days: $('#u_ld', m).value, per_order: $('#u_po', m).value, manual_week: $('#u_mw', m).value, notes: $('#u_no', m).value, box_l: $('#u_bl', m).value, box_w: $('#u_bw', m).value, box_h: $('#u_bh', m).value, box_g: $('#u_bg', m).value, box_outer: $('#u_bo', m).value === '1', active: s ? $('#u_a', m).checked : true};
     await api(s ? 'PUT' : 'POST', s ? `/api/supplies/${s.id}` : '/api/supplies', body); m.remove(); route();
   });
   if (s) $('#del', m).onclick = () => { if (confirm('Delete this supply (and unlink it from products)?')) safe(async () => { await api('DELETE', `/api/supplies/${s.id}`); m.remove(); route(); }); };
@@ -1068,7 +1069,7 @@ function restockSupply(id, name) {
 function priceDialog(init, onUse) {
   const bx = init.boxes || [];
   const m = modal(`<h2 style="margin-top:0">Work out a price — ${esc(init.name)}</h2><div class="grid">
-    <div class="full"><label>Box / parcel</label><select id="pd_box">${bx.map((b, i) => `<option value="${i}" ${i === init.preIdx ? 'selected' : ''}>${esc(b.name)}${b.own ? '' : ' (generic)'} — ${b.price != null ? money(b.price) + ' ' + esc(b.svc) : 'no Etsy label fits'}</option>`).join('')}<option value="-1" ${init.preIdx < 0 ? 'selected' : ''}>Don’t use a box — enter postage myself</option></select>
+    <div class="full"><label>Box / parcel</label><select id="pd_box">${bx.map((b, i) => `<option value="${i}" ${i === init.preIdx ? 'selected' : ''}>${esc(b.name)}${b.own ? '' : ' (generic)'} — ${b.price != null ? money(b.price) + ' ' + esc(b.svc) : 'no service fits (' + esc(b.why || 'check sizes') + ')'}</option>`).join('')}<option value="-1" ${init.preIdx < 0 ? 'selected' : ''}>Don’t use a box — enter postage myself</option></select>
       <div class="mute" style="font-size:12px;margin-top:4px">${bx.length ? 'Cheapest fitting box picked for you — change it if you pack differently. Postage and packaging cost update.' : esc(init.hint || '')}</div></div>
     <div><label>Cost to make one (£)</label><input id="pd_cost" type="number" step="0.01"><div class="mute" id="pd_cb" style="font-size:12px;margin-top:4px"></div></div>
     <div><label>Postage you pay (£)</label><input id="pd_post" type="number" step="0.01"><div class="mute" id="pd_ps" style="font-size:12px;margin-top:4px"></div></div>
@@ -1105,6 +1106,12 @@ function priceDialog(init, onUse) {
 }
 
 /* ---------------- Shipping calculator ---------------- */
+const BOXPAD = 0.8;
+const boxOf = s => { const d = [+s.box_l, +s.box_w, +s.box_h]; return s.box_outer ? {d: d.map(x => Math.max(+(x - BOXPAD).toFixed(1), 0.1)), od: d} : {d, od: d.map(x => +(x + BOXPAD).toFixed(1))}; };
+const stdBox = ([name, l, w, hh, g]) => ({name, d: [l, w, hh], od: [l, w, hh].map(x => +(x + BOXPAD).toFixed(1)), g, own: false});
+function bestRate(R, g, dims) { const all = shipOptions(R, g, dims).filter(x => x.ok).sort((a, b) => a.price - b.price); const e = all.find(x => x.etsy), o = e || all[0]; return o ? {...o, notEtsy: !e} : null; }
+function whyNoRate(R, g, dims) { const d = [...dims].sort((a, b) => b - a); const tooBig = R.every(s => { const l = [...s.dims].sort((a, b) => b - a); return !d.every((x, i) => x <= l[i]); }); return tooBig ? 'bigger than every service in the rate table — check the box size is in cm, not mm' : `too heavy (${g} g) for any service this size`; }
+const svcLabel = o => o ? o.name.replace(' (est.)', '') + (o.notEtsy ? ' — not an Etsy label' : '') : '';
 function shipOptions(rates, g, dims) {
   const d = dims.filter(x => x > 0).sort((a, b) => b - a); while (d.length < 3) d.push(0);
   return rates.map(s => {
@@ -1164,8 +1171,8 @@ async function shipping() {
   $('#sh_reset').onclick = () => { if (confirm('Reset all shipping rates to the built-in defaults?')) safe(async () => { R = await api('DELETE', '/api/shipping/rates'); renderRates(); out(); toast('Rates reset'); }); };
   out();
   const boxes = () => {
-    const own = SUPS.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, d: [s.box_l, s.box_w, s.box_h], g: s.box_g || 0, stock: s.remaining, own: true}));
-    return {own, std: STD_BOXES.map(([name, l, w, hh, g]) => ({name, d: [l, w, hh], g, own: false}))};
+    const own = SUPS.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, ...boxOf(s), g: s.box_g || 0, stock: s.remaining, own: true}));
+    return {own, std: STD_BOXES.map(stdBox)};
   };
   const renderBox = () => {
     $('#bx_rows').innerHTML = basket.map((b, i) => { const p = PRODUCTS.find(x => x.id === b.id); return `<div style="display:flex;gap:8px;align-items:center;margin-top:4px"><span style="flex:1">${esc(p.name)}${p.item_l ? ` <span class="mute">${p.item_l}×${p.item_w}×${p.item_h} cm</span>` : ' <span class="bad" style="font-size:12px">no size set — add it in Products → Edit</span>'}</span><span class="mute">qty</span><input data-bq="${i}" type="number" min="1" value="${b.qty}" style="width:70px;padding:5px 8px"><button class="g" data-bx="${i}">✕</button></div>`; }).join('');
@@ -1182,10 +1189,9 @@ async function shipping() {
     const fits = bx => items.every(i => { const a = [i.p.item_l, i.p.item_w, i.p.item_h].sort((x, y) => y - x), b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]); }) && vol <= bx.d[0] * bx.d[1] * bx.d[2];
     const {own, std} = boxes();
     let cands = own.filter(fits); const usingStd = !cands.length; if (usingStd) cands = std.filter(fits);
-    const etsyR = R.filter(s => s.etsy);
-    cands = cands.map(bx => { const g = Math.round(itemG + pad + bx.g), outer = bx.d.map(x => x + 1), o = shipOptions(etsyR, g, outer).filter(x => x.ok).sort((a, b) => a.price - b.price)[0]; return {...bx, g, outer, best: o}; })
+    cands = cands.map(bx => { const g = Math.round(itemG + pad + bx.g), outer = bx.od, o = bestRate(R, g, outer); return {...bx, g, outer, best: o, why: o ? '' : whyNoRate(R, g, outer)}; })
       .sort((a, b) => ((a.best ? a.best.price : 99) - (b.best ? b.best.price : 99)) || (a.d[0] * a.d[1] * a.d[2] - b.d[0] * b.d[1] * b.d[2])).slice(0, 4);
-    $('#bx_out').innerHTML = cands.length ? `<div class="wrap"><table><tr><th>Suggested box</th><th>Inner size</th><th class="r">Parcel weight</th><th>Cheapest Etsy label</th><th></th></tr>${cands.map((c, i) => `<tr><td>${esc(c.name)}${i === 0 ? ' <span class="pill">best</span>' : ''}${c.own ? (c.stock <= 0 ? ' <span class="bad" style="font-size:12px">(out of stock)</span>' : ` <span class="mute" style="font-size:12px">(${+c.stock.toFixed(0)} in stock)</span>`) : ''}</td><td>${c.d.join(' × ')} cm</td><td class="r">${c.g}g</td><td>${c.best ? `${esc(c.best.name.replace(' (est.)', ''))} — <b>${money(c.best.price)}</b>` : '<span class="mute">no service fits</span>'}</td>
+    $('#bx_out').innerHTML = cands.length ? `<div class="wrap"><table><tr><th>Suggested box</th><th>Inner size</th><th class="r">Parcel weight</th><th>Cheapest service</th><th></th></tr>${cands.map((c, i) => `<tr><td>${esc(c.name)}${i === 0 ? ' <span class="pill">best</span>' : ''}${c.own ? (c.stock <= 0 ? ' <span class="bad" style="font-size:12px">(out of stock)</span>' : ` <span class="mute" style="font-size:12px">(${+c.stock.toFixed(0)} in stock)</span>`) : ''}</td><td>${c.d.join(' × ')} cm</td><td class="r">${c.g}g</td><td>${c.best ? `${esc(svcLabel(c.best))} — <b>${money(c.best.price)}</b>` : `<span class="bad">no service fits: ${esc(c.why)}</span>`}</td>
       <td class="r"><button class="g" data-use="${i}">Use this parcel</button></td></tr>`).join('')}</table></div>${usingStd ? '<p class="mute">None of your own boxes fit (or none are set up yet), so these are generic sizes. Add your real boxes in Stock → Supplies (with their inner size) and I’ll suggest those instead.</p>' : ''}`
       : '<div class="note">Nothing in the box list is big enough — try splitting into two parcels or add a larger box in Supplies.</div>';
     document.querySelectorAll('[data-use]').forEach(el => el.onclick = () => { const c = cands[+el.dataset.use]; $('#sh_g').value = c.g; [$('#sh_l'), $('#sh_w'), $('#sh_h')].forEach((inp, k) => inp.value = c.outer[k]); out(); toast('Parcel loaded below'); });
@@ -1276,11 +1282,11 @@ function packAdvice(o) {
     const vol = items.reduce((t, i) => t + i.q * i.p.item_l * i.p.item_w * i.p.item_h, 0) * 1.3;
     const itemG = items.reduce((t, i) => t + i.q * (i.p.items_per_plate ? i.p.plate_grams / i.p.items_per_plate : 0), 0);
     const fits = bx => items.every(i => { const a = [i.p.item_l, i.p.item_w, i.p.item_h].sort((x, y) => y - x), b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]); }) && vol <= bx.d[0] * bx.d[1] * bx.d[2];
-    const own = OSUPS.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, d: [s.box_l, s.box_w, s.box_h], g: s.box_g || 0, own: true}));
-    let c = own.filter(fits); if (!c.length) c = STD_BOXES.map(([name, l, w, hh, g]) => ({name, d: [l, w, hh], g, own: false})).filter(fits);
-    c = c.map(bx => { const g = Math.round(itemG + bx.g), outer = bx.d.map(x => x + 1); const op = shipOptions(OD.R.filter(x => x.etsy), g, outer).filter(x => x.ok).sort((a, b) => a.price - b.price)[0]; return {...bx, g, op}; })
+    const own = OSUPS.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, ...boxOf(s), g: s.box_g || 0, own: true}));
+    let c = own.filter(fits); if (!c.length) c = STD_BOXES.map(stdBox).filter(fits);
+    c = c.map(bx => { const g = Math.round(itemG + bx.g); const op = bestRate(OD.R, g, bx.od); return {...bx, g, op}; })
       .sort((a, b) => ((a.op ? a.op.price : 99) - (b.op ? b.op.price : 99)) || (a.d[0] * a.d[1] * a.d[2] - b.d[0] * b.d[1] * b.d[2]));
-    if (c[0]) { box = c[0]; if (c[0].op) price = [c[0].op.price, c[0].op.name.replace(' (est.)', '')]; }
+    if (c[0]) { box = c[0]; if (c[0].op) price = [c[0].op.price, svcLabel(c[0].op)]; }
   }
   if (!price && items.length) price = postageFor(items[0].p, OD);
   return {box, price, supplies};
