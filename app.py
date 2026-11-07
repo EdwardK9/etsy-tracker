@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.29.1"
+VERSION = "0.30.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -462,10 +462,14 @@ def product_rows():
         COALESCE((SELECT SUM(qty) FROM sales s WHERE s.product_id=p.id),0) AS sold,
         (SELECT COUNT(*) FROM product_images i WHERE i.product_id=p.id) AS n_images
       FROM products p ORDER BY p.active DESC, p.name COLLATE NOCASE""")
+    pack = {r["product_id"]: r["c"] for r in rows(
+        "SELECT ps.product_id, SUM(ps.qty*s.unit_cost) AS c FROM product_supplies ps JOIN supplies s ON s.id=ps.supply_id GROUP BY ps.product_id")}
     for p in ps:
         p["stock"] = p["made"] - p["sold"]
-        p["unit_cost"] = unit_cost_of(p)
-        p["margin_est"] = round(p["price"] - p["unit_cost"], 2)
+        p["unit_cost"] = unit_cost_of(p)          # print cost only (used for stock value / sale snapshots)
+        p["pack_cost"] = round(pack.get(p["id"]) or 0, 4)  # packaging from Supplies (bought via expenses, so not in sale COGS)
+        p["full_cost"] = round(p["unit_cost"] + p["pack_cost"], 4)
+        p["margin_est"] = round(p["price"] - p["full_cost"], 2)
     return ps
 
 

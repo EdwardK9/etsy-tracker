@@ -320,7 +320,7 @@ async function products() {
 <div class="top"><h1>Products</h1><span class="sp"></span><a class="b alt" href="/api/export/products.csv">Export CSV</a><button class="b" onclick="editProduct()">+ New product</button></div>
   <div class="wrap"><table><tr><th>Product</th><th>SKU</th><th class="r">Price</th><th class="r">Unit cost</th><th class="r">Margin</th><th class="r">Stock</th><th>Bambuddy</th><th></th></tr>
   ${PRODUCTS.map(p => `<tr style="${p.active ? '' : 'opacity:.5'}"><td>${esc(p.name)}</td><td class="mute">${esc(p.sku)}</td>
-    <td class="r">${money(p.price)}</td><td class="r">${money(p.unit_cost)}</td><td class="r ${cls(p.margin_est)}">${money(p.margin_est)}</td>
+    <td class="r">${money(p.price)}</td><td class="r" title="Print ${money(p.unit_cost)} + packaging ${money(p.pack_cost)}">${money(p.full_cost)}</td><td class="r ${cls(p.margin_est)}">${money(p.margin_est)}</td>
     <td class="r ${!p.made_to_order && p.reorder_at && p.stock <= p.reorder_at ? 'bad' : ''}">${p.made_to_order ? '<span class="mute" title="Print per order">per order</span>' : p.stock}</td>
     <td>${p.archive_id ? `<span class="pill" title="${esc(p.archive_name)}">linked · ${p.plate_grams}g/plate</span> <button class="g" onclick="refreshBB(${p.id})">↻</button>` : '<span class="mute">—</span>'}</td>
     <td><button class="g" onclick="editProduct(${p.id})">Edit</button> <button class="g" onclick="history(${p.id})">History</button> <a class="g" style="text-decoration:none;display:inline-block" href="/api/products/${p.id}/pdf" title="PDF of its measurements and photos">PDF</a></td></tr>`).join('') || '<tr><td colspan=8 class="mute">No products yet — add your first one.</td></tr>'}
@@ -344,7 +344,7 @@ function editProduct(id) {
     <div><label>Filament per plate (g)</label><input id="f_grams" type="number" step="0.1" value="${p.plate_grams}"></div>
     <div><label>Filament cost per plate (${cur()})</label><input id="f_pcost" type="number" step="0.01" value="${p.plate_cost}"></div>
     <div><label>Items per plate</label><input id="f_ipp" type="number" min="1" value="${p.items_per_plate}"></div>
-    <div><label>Extra cost per item (packaging etc.)</label><input id="f_extra" type="number" step="0.01" value="${p.extra_cost}"></div>
+    <div><label>Other extra cost per item <span class="mute">(anything not in Supplies)</span></label><input id="f_extra" type="number" step="0.01" value="${p.extra_cost}"></div>
     <div><label>Electricity per plate (£)</label><input id="f_energy" type="number" step="0.001" value="${p.plate_energy || 0}"></div>
     <div><label>Hands-on time per item (min: cleanup, packing)</label><input id="f_lab" type="number" value="${p.labour_minutes || 0}"></div>
     <div><label>Print time per item (min)</label><input id="f_min" type="number" value="${p.print_minutes}"></div>
@@ -352,8 +352,12 @@ function editProduct(id) {
     <div id="f_stk" class="full" ${p.made_to_order ? 'style="display:none"' : ''}><div class="grid"><div><label>Low-stock warning at</label><input id="f_re" type="number" value="${p.reorder_at}"></div>
       <div><label>Print up to this many when low</label><input id="f_rt" type="number" value="${p.restock_to || ''}" placeholder="default: double the warning level"></div></div></div>
     <div class="full"><label>Printed item size L × W × H (cm) — lets the Shipping tab suggest a box</label><div style="display:flex;gap:6px"><input id="f_il" type="number" step="0.1" placeholder="L" value="${p.item_l || ''}"><input id="f_iw" type="number" step="0.1" placeholder="W" value="${p.item_w || ''}"><input id="f_ih" type="number" step="0.1" placeholder="H" value="${p.item_h || ''}"></div></div>
-    <div class="full"><label>Packaging used per item <span class="mute">(stock in the Supplies tab drops automatically when this sells)</span></label><div id="f_sup"></div>
-      <div style="display:flex;gap:6px;margin-top:6px"><select id="f_supsel" style="flex:1"><option value="">Add a supply…</option></select><button class="g" id="f_supadd">Add</button></div></div>
+    <div class="full" style="border:1px solid var(--line);border-radius:12px;padding:12px"><label style="margin-bottom:2px">Packaging &amp; extras for one item</label>
+      <div class="mute" style="font-size:12px;margin-bottom:8px">Everything that goes in the parcel with one of these — the box, paper, tissue… Each sale takes them off your stock, and their cost is added to the price calculator and margin.</div>
+      <div id="f_sup"></div>
+      <select id="f_supsel" style="margin-top:6px"><option value="">+ Add a box or packaging item…</option></select>
+      <div class="mute" style="font-size:12px;margin-top:4px">Not in the list? Add it first under Stock → Supplies.</div>
+      <div id="f_packsum" style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);font-size:13px"></div></div>
     <div class="full"><label>Notes</label><textarea id="f_notes" rows="2">${esc(p.notes)}</textarea></div>
     <div><label><input type="checkbox" id="f_active" style="width:auto" ${p.active ? 'checked' : ''}> Active</label></div>
   </div>
@@ -362,7 +366,7 @@ function editProduct(id) {
   $('#f_calc', m).onclick = () => safe(async () => {
     const n = id => +$(id, m).value || 0, D = await loadShipData();
     if (!SUP.length) SUP = await api('GET', '/api/supplies');
-    const base = (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0);
+    const base = baseNow();
     const supCost = id => { const s = SUP.find(x => x.id === id); return s ? (s.unit_cost || 0) * 1 : 0; };
     const pack = psel.reduce((t, r) => { const s = SUP.find(x => x.id === r.supply_id); return t + (s ? (s.unit_cost || 0) * r.qty : 0); }, 0);
     const dims = [n('#f_il'), n('#f_iw'), n('#f_ih')], itemG = n('#f_grams') / Math.max(n('#f_ipp'), 1);
@@ -386,21 +390,27 @@ function editProduct(id) {
   let arch = {id: p.archive_id, name: p.archive_name};
   $('#f_mto', m).onchange = e => { $('#f_stk', m).style.display = e.target.checked ? 'none' : ''; };
   let SUP = [], psel = [];
+  const baseNow = () => { const n = id => +$(id, m).value || 0; return (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0); };
+  const packNow = () => psel.reduce((t, r) => { const s = SUP.find(x => x.id === r.supply_id); return t + (s ? (s.unit_cost || 0) * (+r.qty || 0) : 0); }, 0);
+  const updSum = () => { const b = baseNow(), k = packNow(); $('#f_packsum', m).innerHTML = `Printing ${money(b)} + packaging <b>${money(k)}</b> = <b>${money(b + k)}</b> to make &amp; pack one`; psel.forEach((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}, el = m.querySelector(`[data-lc="${i}"]`); if (el) el.textContent = money((s.unit_cost || 0) * (+r.qty || 0)); }); };
   const renderSup = () => {
-    $('#f_sup', m).innerHTML = psel.map((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}; const roll = s.unit === 'cm';
-      return `<div style="margin-top:6px"><div style="display:flex;gap:8px;align-items:center"><span style="flex:1">${esc(s.name || '?')}</span><input data-q="${i}" type="number" step="0.1" value="${r.qty}" style="width:80px;padding:5px 8px"><span class="mute">${roll ? 'cm of roll' : 'per item'}</span><button class="g" data-x="${i}">✕</button></div>
-      ${roll ? `<div class="mute" style="font-size:12px;margin-top:3px;display:flex;gap:6px;align-items:center">Piece size: <input data-pl="${i}" type="number" placeholder="length" style="width:70px;padding:4px 6px"> × <input data-pw="${i}" type="number" placeholder="${s.roll_width ? 'width (blank = ' + s.roll_width + ')' : 'width'}" style="width:110px;padding:4px 6px"> cm → fills the amount above</div>` : ''}</div>`; }).join('');
+    $('#f_sup', m).innerHTML = psel.map((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}, roll = s.unit === 'cm';
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="display:grid;grid-template-columns:1fr 72px 70px 70px 28px;gap:8px;align-items:center"><span>${esc(s.name || '?')}${s.box_l > 0 ? ' <span class="mute" style="font-size:11px">box</span>' : ''}</span><input data-q="${i}" type="number" step="0.1" value="${r.qty}" style="padding:5px 8px;text-align:right"><span class="mute" style="font-size:12px">${roll ? 'cm of roll' : 'per item'}</span><b data-lc="${i}" style="text-align:right"></b><button class="g" data-x="${i}" title="Remove">✕</button></div>
+      ${roll ? `<div class="mute" style="font-size:12px;margin-top:4px;display:flex;gap:6px;align-items:center">Piece size: <input data-pl="${i}" type="number" placeholder="length" style="width:70px;padding:4px 6px"> × <input data-pw="${i}" type="number" placeholder="${s.roll_width ? 'width (blank = ' + s.roll_width + ')' : 'width'}" style="width:110px;padding:4px 6px"> cm → fills the amount above</div>` : ''}</div>`; }).join('') || '<div class="mute" style="font-size:12px">Nothing added yet.</div>';
     m.querySelectorAll('[data-pl],[data-pw]').forEach(el => el.oninput = () => {
       const i = +(el.dataset.pl ?? el.dataset.pw), s = SUP.find(x => x.id === psel[i].supply_id) || {}, row = el.closest('div').parentNode;
       const L = +row.querySelector('[data-pl]').value || 0, W = +row.querySelector('[data-pw]').value || s.roll_width || 0;
-      if (L) { psel[i].qty = +(s.roll_width && W ? L * W / s.roll_width : L).toFixed(2); row.querySelector('[data-q]').value = psel[i].qty; }
+      if (L) { psel[i].qty = +(s.roll_width && W ? L * W / s.roll_width : L).toFixed(2); row.querySelector('[data-q]').value = psel[i].qty; updSum(); }
     });
-    m.querySelectorAll('[data-q]').forEach(el => el.oninput = () => psel[+el.dataset.q].qty = +el.value);
+    m.querySelectorAll('[data-q]').forEach(el => el.oninput = () => { psel[+el.dataset.q].qty = +el.value; updSum(); });
     m.querySelectorAll('[data-x]').forEach(el => el.onclick = () => { psel.splice(+el.dataset.x, 1); renderSup(); });
-    $('#f_supsel', m).innerHTML = '<option value="">Add a supply…</option>' + SUP.filter(s => s.active && !psel.some(r => r.supply_id === s.id)).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+    const free = SUP.filter(s => s.active && !psel.some(r => r.supply_id === s.id)), opt = s => `<option value="${s.id}">${esc(s.name)}${s.unit_cost ? ' — ' + money(s.unit_cost) + (s.unit === 'cm' ? '/cm' : ' each') : ''}</option>`;
+    $('#f_supsel', m).innerHTML = '<option value="">+ Add a box or packaging item…</option>' + (free.some(s => s.box_l > 0) ? '<optgroup label="Boxes &amp; mailers">' + free.filter(s => s.box_l > 0).map(opt).join('') + '</optgroup>' : '') + (free.some(s => !(s.box_l > 0)) ? '<optgroup label="Other packaging">' + free.filter(s => !(s.box_l > 0)).map(opt).join('') + '</optgroup>' : '');
+    updSum();
   };
   safe(async () => { SUP = await api('GET', '/api/supplies'); if (id) psel = await api('GET', `/api/products/${id}/supplies`); renderSup(); });
-  $('#f_supadd', m).onclick = () => { const v = +$('#f_supsel', m).value; if (v) { psel.push({supply_id: v, qty: 1}); renderSup(); } };
+  $('#f_supsel', m).onchange = () => { const v = +$('#f_supsel', m).value; if (v) { psel.push({supply_id: v, qty: 1}); renderSup(); } };
+  ['#f_pcost', '#f_energy', '#f_ipp', '#f_extra', '#f_lab', '#f_grams'].forEach(i => $(i, m).addEventListener('input', () => updSum()));
   const search = () => safe(async () => {
     const list = await api('GET', '/api/bambuddy/archives?q=' + encodeURIComponent($('#bbq', m).value));
     $('#bbres', m).innerHTML = list.slice(0, 8).map((a, i) => `<div class="pick" data-i="${i}"><b>${esc(a.name)}</b> <span class="mute">${a.grams}g · ${money(a.cost)}${a.cost_estimated ? ' (est.)' : ''}${a.objects ? ' · ' + a.objects + ' objects' : ''} · ${esc(a.status)}</span></div>`).join('') || '<div class="mute">No matches.</div>';
@@ -834,8 +844,8 @@ async function pricing() {
   <div id="pc_out"></div>
   <h2>All products at their current price</h2>
   <div class="wrap"><table><tr><th>Product</th><th class="r">Price</th><th class="r">Cost</th><th class="r">Profit</th><th class="r">Margin</th><th class="r">Price for ${dm}%</th></tr>
-  ${act.map(p => { const o = {cost: p.unit_cost, ship: shipChargedFor(p, D)[0], postage: postageFor(p, D)[0], offsite: false}; const r = profitAt(p.price, o); const tp = priceCalc({...o, mode: 'margin', target: dm});
-    return `<tr><td>${esc(p.name)}</td><td class="r">${money(p.price)}</td><td class="r">${money(p.unit_cost)}</td><td class="r ${cls(r.profit)}">${money(r.profit)}</td><td class="r ${cls(r.margin - dm)}">${r.margin.toFixed(0)}%</td><td class="r">${isFinite(tp) ? money(Math.ceil(tp * 20) / 20) : '—'}</td></tr>`; }).join('') || '<tr><td colspan=6 class="mute">No products yet.</td></tr>'}
+  ${act.map(p => { const o = {cost: p.full_cost, ship: shipChargedFor(p, D)[0], postage: postageFor(p, D)[0], offsite: false}; const r = profitAt(p.price, o); const tp = priceCalc({...o, mode: 'margin', target: dm});
+    return `<tr><td>${esc(p.name)}</td><td class="r">${money(p.price)}</td><td class="r">${money(p.full_cost)}</td><td class="r ${cls(r.profit)}">${money(r.profit)}</td><td class="r ${cls(r.margin - dm)}">${r.margin.toFixed(0)}%</td><td class="r">${isFinite(tp) ? money(Math.ceil(tp * 20) / 20) : '—'}</td></tr>`; }).join('') || '<tr><td colspan=6 class="mute">No products yet.</td></tr>'}
   </table></div><p class="mute">Profit here is for a single item using the product's postage (saved, or the cheapest Etsy label for its saved parcel, or your default) and the shipping charge from its Etsy shipping profile (or your default).</p>`;
   const g = id => $(id);
   const calc = () => {
@@ -859,7 +869,7 @@ async function pricing() {
     const p = PRODUCTS.find(x => x.id == g('#pc_prod').value);
     try { localStorage.setItem('pcProd', g('#pc_prod').value); } catch (e) {}
     if (p) { const [po, ps] = postageFor(p, D), [sh, ss] = shipChargedFor(p, D);
-      g('#pc_cost').value = p.unit_cost.toFixed(2); g('#pc_post').value = po.toFixed(2); g('#pc_ship').value = sh.toFixed(2);
+      g('#pc_cost').value = p.full_cost.toFixed(2); g('#pc_post').value = po.toFixed(2); g('#pc_ship').value = sh.toFixed(2);
       g('#pc_posth').textContent = 'Auto-filled from ' + ps; g('#pc_shiph').textContent = 'Auto-filled from ' + ss; }
     else { g('#pc_posth').textContent = g('#pc_shiph').textContent = ''; }
     calc();
