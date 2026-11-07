@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.30.2"
+VERSION = "0.30.3"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -1168,7 +1168,7 @@ def api_etsy_sample():
     """Debug helper: latest ledger entries + one receipt, so real field values can be inspected."""
     shop = settings().get("etsy_shop_id")
     try:
-        ledger = etsy_get(f"/shops/{shop}/payment-account/ledger-entries", {"limit": 15, "min_created": int(time.time()) - 86400 * 60, "max_created": int(time.time())})
+        ledger = etsy_get(f"/shops/{shop}/payment-account/ledger-entries", {"limit": 15, "min_created": int(time.time()) - 86400 * 30, "max_created": int(time.time())})
     except EtsyError as e:
         ledger = {"error": str(e)}
     try:
@@ -1188,15 +1188,20 @@ LABEL_WORDS = ("label", "postage", "shipping", "royal mail", "evri", "hermes")
 def fetch_label_entries(days=90):
     s = settings()
     now = int(time.time())
-    out, offset = [], 0
-    while offset < 1000:
-        d = etsy_get(f"/shops/{s['etsy_shop_id']}/payment-account/ledger-entries",
-                     {"limit": 100, "offset": offset, "min_created": now - 86400 * days, "max_created": now})
-        res = d.get("results", [])
-        out += res
-        offset += 100
-        if len(res) < 100:
-            break
+    out = []
+    # Etsy rejects windows over 31 days, so walk back in 30-day chunks
+    for k in range(max(1, -(-days // 30))):
+        hi = now - 86400 * 30 * k
+        lo = max(hi - 86400 * 30, now - 86400 * days)
+        offset = 0
+        while offset < 1000:
+            d = etsy_get(f"/shops/{s['etsy_shop_id']}/payment-account/ledger-entries",
+                         {"limit": 100, "offset": offset, "min_created": lo, "max_created": hi})
+            res = d.get("results", [])
+            out += res
+            offset += 100
+            if len(res) < 100:
+                break
     found = []
     for e in out:
         text = " ".join(str(e.get(k) or "") for k in ("description", "ledger_type", "reference_type")).lower()
