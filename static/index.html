@@ -1106,7 +1106,7 @@ function priceDialog(init, onUse) {
 }
 
 /* ---------------- Shipping calculator ---------------- */
-const BOXPAD = 0.4;
+const BOXPAD = 0.5;
 const MM = x => (+x > 0 ? +(x * 10).toFixed(1) : ''), CM = v => (+v || 0) / 10, mmTxt = d => d.map(x => +(x * 10).toFixed(1)).join(' × ') + ' mm';
 const boxOf = s => { const d = [+s.box_l, +s.box_w, +s.box_h]; return s.box_outer ? {d: d.map(x => Math.max(+(x - BOXPAD).toFixed(1), 0.1)), od: d} : {d, od: d.map(x => +(x + BOXPAD).toFixed(1))}; };
 const stdBox = ([name, l, w, hh, g]) => ({name: `Generic ${l * 10}×${w * 10}×${hh * 10} mm`, d: [l, w, hh], od: [l, w, hh].map(x => +(x + BOXPAD).toFixed(1)), g, own: false});
