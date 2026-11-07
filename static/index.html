@@ -376,8 +376,8 @@ function editProduct(id) {
         const g = Math.round(itemG + bx.g), op = shipOptions(D.R.filter(x => x.etsy), g, bx.d.map(x => x + 1)).filter(x => x.ok).sort((x, y) => x.price - y.price)[0];
         return {...bx, weight: g, price: op ? op.price : null, svc: op ? op.name.replace(' (est.)', '') : ''};
       }).sort((x, y) => (x.own === y.own ? 0 : x.own ? -1 : 1) || ((x.price ?? 99) - (y.price ?? 99)) || (x.d[0] * x.d[1] * x.d[2] - y.d[0] * y.d[1] * y.d[2]));
-      if (!boxes.length) hint = 'No box fits that item size — check the L × W × H, or add a bigger box in Supplies.';
-    } else hint = 'Enter the printed item size (L × W × H) in the form to get a box suggestion — until then postage uses your default.';
+      if (!boxes.length) hint = 'No box fits that item size — check the L × W × H, or add a bigger box under Stock → Supplies.';
+    } else hint = 'No boxes listed because the printed item size is empty. Close this, fill in “Printed item size L × W × H” on the product form, then press Calculate again. (Add your own boxes under Stock → Supplies.)';
     const inPsel = bx => bx.own && psel.some(r => r.supply_id === bx.sid);
     const pre = boxes.find(inPsel) || boxes.find(b => b.own) || boxes[0];
     const [po, ps] = postageFor(p, D), [sh, ss] = shipChargedFor(p, D);
