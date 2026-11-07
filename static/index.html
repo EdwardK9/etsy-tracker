@@ -347,7 +347,7 @@ function editProduct(id) {
     <div><label>Sold as a pack of (items)</label><input id="f_pq" type="number" min="1" step="1" value="${p.pack_qty || 1}"></div>
     <div class="mute" style="font-size:12px;align-self:end;padding-bottom:12px">1 = a single item. A pack of 4 prints 4, goes in one box, and each sale uses one pack of stock. Print cost and box size are worked out for the whole pack.</div>
     <div class="full"><label>Pack options on the Etsy listing <span class="mute">(optional)</span></label><div id="f_vm"></div>
-      <div class="mute" style="font-size:12px;margin-top:4px">If this one listing has a choice like Quantity: 1 / 4, say which option text means how many items (e.g. “4” → 4). A sale of that option takes that many from stock, and its box size, weight and cost use that many. Matches part of the option text, so “4” also matches “Pack of 4”.</div></div>
+      <div class="mute" style="font-size:12px;margin-top:4px">If this one listing has a choice like Quantity: 1 / 4, say which option text means how many items (e.g. “4” → 4). A sale of that option takes that many from stock, and its box size, weight and cost use that many. Matches part of the option text, and is also the name shown to buyers on Etsy, so use the full wording (e.g. “Pack of 4”). Add a row for the single item too (1 item). “Work out price” uses the cost, box and postage for that pack size.</div></div>
     <div><label>Other extra cost per item <span class="mute">(anything not in Supplies)</span></label><input id="f_extra" type="number" step="0.01" value="${p.extra_cost}"></div>
     <div><label>Electricity per plate (£)</label><input id="f_energy" type="number" step="0.001" value="${p.plate_energy || 0}"></div>
     <div><label>Hands-on time per item (min: cleanup, packing)</label><input id="f_lab" type="number" value="${p.labour_minutes || 0}"></div>
@@ -367,16 +367,16 @@ function editProduct(id) {
   </div>
   <div class="bar" style="margin:14px 0 0"><button class="b" id="save">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span>
   ${id ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
-  $('#f_calc', m).onclick = () => safe(async () => {
+  const runCalc = (mult, onUse) => safe(async () => {
     const n = id => +$(id, m).value || 0, D = await loadShipData();
     if (!SUP.length) SUP = await api('GET', '/api/supplies');
-    const base = baseNow();
+    const base = baseNow(mult);
     const supCost = id => { const s = SUP.find(x => x.id === id); return s ? (s.unit_cost || 0) * 1 : 0; };
     const pack = psel.reduce((t, r) => { const s = SUP.find(x => x.id === r.supply_id); return t + (s ? (s.unit_cost || 0) * r.qty : 0); }, 0);
-    const dims = [n('#f_il') / 10, n('#f_iw') / 10, n('#f_ih') / 10], itemG = n('#f_grams') / Math.max(n('#f_ipp'), 1) * Math.max(n('#f_pq'), 1);
+    const dims = [n('#f_il') / 10, n('#f_iw') / 10, n('#f_ih') / 10], itemG = n('#f_grams') / Math.max(n('#f_ipp'), 1) * Math.max(n('#f_pq'), 1) * mult;
     let boxes = [], hint = '';
     if (dims.every(x => x > 0)) {
-      const vol = dims[0] * dims[1] * dims[2] * Math.max(n('#f_pq'), 1) * 1.3, a = [...dims].sort((x, y) => y - x);
+      const vol = dims[0] * dims[1] * dims[2] * Math.max(n('#f_pq'), 1) * mult * 1.3, a = [...dims].sort((x, y) => y - x);
       const fits = bx => { const b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]) && vol <= bx.d[0] * bx.d[1] * bx.d[2]; };
       const own = SUP.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, ...boxOf(s), g: s.box_g || 0, cost: s.unit_cost || 0, own: true, sid: s.id}));
       const gen = STD_BOXES.map(b => ({...stdBox(b), cost: 0}));
@@ -389,20 +389,22 @@ function editProduct(id) {
     const inPsel = bx => bx.own && psel.some(r => r.supply_id === bx.sid);
     const pre = boxes.find(inPsel) || boxes.find(b => b.own) || boxes[0];
     const [po, ps] = postageFor(p, D), [sh, ss] = shipChargedFor(p, D);
-    priceDialog({base, pack, boxes, hint, preIdx: pre ? boxes.indexOf(pre) : -1, inPsel, postage: po, ship: sh, postageSrc: ps, shipSrc: ss, name: $('#f_name', m).value || 'this product'}, v => { $('#f_price', m).value = v.toFixed(2); });
+    priceDialog({base, pack, boxes, hint, preIdx: pre ? boxes.indexOf(pre) : -1, inPsel, postage: po, ship: sh, postageSrc: ps, shipSrc: ss, name: ($('#f_name', m).value || 'this product') + (mult > 1 ? ` — pack of ${mult}` : '')}, onUse);
   });
+  $('#f_calc', m).onclick = () => runCalc(1, v => { $('#f_price', m).value = v.toFixed(2); });
   let arch = {id: p.archive_id, name: p.archive_name};
   let VM = (p.var_map || []).map(x => ({...x}));
   const renderVM = () => {
-    $('#f_vm', m).innerHTML = VM.map((x, i) => `<div style="display:grid;grid-template-columns:1fr 110px 36px;gap:8px;margin-bottom:6px;align-items:center"><input data-vm="m${i}" placeholder="Option text, e.g. Pack of 4" value="${esc(x.match)}"><input data-vm="n${i}" type="number" min="1" step="1" placeholder="items" value="${x.mult || ''}"><button type="button" class="g" data-vmx="${i}" title="Remove">✕</button></div>`).join('') + '<button type="button" class="g" id="f_vmadd">+ Add a pack option</button>';
-    $('#f_vm', m).querySelectorAll('[data-vm]').forEach(el => el.oninput = () => { const k = el.dataset.vm; VM[+k.slice(1)][k[0] === 'm' ? 'match' : 'mult'] = el.value; });
+    $('#f_vm', m).innerHTML = VM.map((x, i) => `<div style="display:grid;grid-template-columns:1fr 70px 90px auto 36px;gap:8px;margin-bottom:6px;align-items:center"><input data-vm="m${i}" placeholder="Option text, e.g. Pack of 4" value="${esc(x.match)}"><input data-vm="n${i}" type="number" min="1" step="1" placeholder="items" value="${x.mult || ''}"><input data-vm="p${i}" type="number" step="0.01" placeholder="£ price" value="${x.price || ''}"><button type="button" class="g" data-vmc="${i}">Work out price</button><button type="button" class="g" data-vmx="${i}" title="Remove">✕</button></div>`).join('') + '<button type="button" class="g" id="f_vmadd">+ Add a pack option</button>';
+    $('#f_vm', m).querySelectorAll('[data-vm]').forEach(el => el.oninput = () => { const k = el.dataset.vm; VM[+k.slice(1)][{m: 'match', n: 'mult', p: 'price'}[k[0]]] = el.value; });
+    $('#f_vm', m).querySelectorAll('[data-vmc]').forEach(el => el.onclick = () => { const i = +el.dataset.vmc; runCalc(Math.max(+VM[i].mult || 1, 1), v => { VM[i].price = +v.toFixed(2); renderVM(); }); });
     $('#f_vm', m).querySelectorAll('[data-vmx]').forEach(el => el.onclick = () => { VM.splice(+el.dataset.vmx, 1); renderVM(); });
-    $('#f_vmadd', m).onclick = () => { VM.push({match: '', mult: 4}); renderVM(); };
+    $('#f_vmadd', m).onclick = () => { VM.push({match: '', mult: 4, price: ''}); renderVM(); };
   };
   renderVM();
   $('#f_mto', m).onchange = e => { $('#f_stk', m).style.display = e.target.checked ? 'none' : ''; };
   let SUP = [], psel = [];
-  const baseNow = () => { const n = id => +$(id, m).value || 0; return (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) * Math.max(n('#f_pq'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0); };
+  const baseNow = (mult = 1) => { const n = id => +$(id, m).value || 0; return (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) * Math.max(n('#f_pq'), 1) * mult + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0); };
   const packNow = () => psel.reduce((t, r) => { const s = SUP.find(x => x.id === r.supply_id); return t + (s ? (s.unit_cost || 0) * (+r.qty || 0) : 0); }, 0);
   const updSum = () => { const b = baseNow(), k = packNow(); $('#f_packsum', m).innerHTML = `Printing ${money(b)} + packaging <b>${money(k)}</b> = <b>${money(b + k)}</b> to make &amp; pack one`; psel.forEach((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}, el = m.querySelector(`[data-lc="${i}"]`); if (el) el.textContent = money((s.unit_cost || 0) * (+r.qty || 0)); }); };
   const renderSup = () => {
@@ -440,7 +442,7 @@ function editProduct(id) {
   $('#bbgo', m).onclick = search;
   $('#save', m).onclick = () => safe(async () => {
     const body = {name: $('#f_name', m).value, sku: $('#f_sku', m).value, price: $('#f_price', m).value, archive_id: arch.id, archive_name: arch.name,
-      plate_grams: $('#f_grams', m).value, plate_cost: $('#f_pcost', m).value, items_per_plate: $('#f_ipp', m).value, pack_qty: $('#f_pq', m).value, var_map: VM.filter(x => String(x.match).trim()).map(x => ({match: String(x.match).trim(), mult: +x.mult || 1})), extra_cost: $('#f_extra', m).value,
+      plate_grams: $('#f_grams', m).value, plate_cost: $('#f_pcost', m).value, items_per_plate: $('#f_ipp', m).value, pack_qty: $('#f_pq', m).value, var_map: VM.filter(x => String(x.match).trim()).map(x => ({match: String(x.match).trim(), mult: +x.mult || 1, price: +x.price || 0})), extra_cost: $('#f_extra', m).value,
       plate_energy: $('#f_energy', m).value, labour_minutes: $('#f_lab', m).value, print_minutes: $('#f_min', m).value, reorder_at: $('#f_re', m).value, restock_to: $('#f_rt', m).value, made_to_order: $('#f_mto', m).checked, notes: $('#f_notes', m).value, active: $('#f_active', m).checked};
     const saved = await api(id ? 'PUT' : 'POST', id ? `/api/products/${id}` : '/api/products', body);
     const pid = id || (saved && saved.id);

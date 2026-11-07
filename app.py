@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.32.0"
+VERSION = "0.33.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -394,7 +394,7 @@ def parse_var_map(raw):
         v = json.loads(raw or "[]")
     except ValueError:
         return []
-    return [{"match": str(x.get("match", "")).strip(), "mult": max(num(x.get("mult"), 1), 1)} for x in v if str(x.get("match", "")).strip()]
+    return [{"match": str(x.get("match", "")).strip(), "mult": max(num(x.get("mult"), 1), 1), "price": round(num(x.get("price")), 2)} for x in v if str(x.get("match", "")).strip()]
 
 
 def variant_mult(p, var_text):
@@ -1640,6 +1640,38 @@ def push_inventory(s, lid, p, qty, readiness):
         return off
 
     products, seen, used_codes = [], set(), set()
+    packs = parse_var_map(dict(p).get("var_map"))
+    if packs:
+        # one listing with a pack choice: Quantity as a second variation, priced per option
+        cols = []
+        if options and vname:
+            for o in options:
+                o = re.sub(r"[()]", "", o).strip()[:20]
+                if o and o.lower() not in [c.lower() for c in cols]:
+                    cols.append(o)
+        plist, pseen = [], set()
+        for k in packs:
+            lab = re.sub(r"[()]", "", k["match"]).strip()[:20]
+            if lab and lab.lower() not in pseen:
+                pseen.add(lab.lower())
+                plist.append((lab, k["price"] if k["price"] > 0 else round(float(p["price"]) * k["mult"], 2), int(k["mult"])))
+        ccode = {c: colour_code(c, used_codes) for c in cols}
+        for c in (cols or [None]):
+            for lab, pr, mu in plist:
+                pv = []
+                if c:
+                    pv.append({"property_id": 513, "property_name": vname, "value_ids": [], "values": [c]})
+                pv.append({"property_id": 514, "property_name": "Quantity", "value_ids": [], "values": [lab]})
+                off = {"price": round(pr, 2), "quantity": qty, "is_enabled": True}
+                if readiness:
+                    off["readiness_state_id"] = int(readiness)
+                prod = {"property_values": pv, "offerings": [off]}
+                if p["sku"]:
+                    prod["sku"] = (p["sku"][:18] + ("-" + ccode[c] if c else "") + f"-x{mu}")[:32]
+                products.append(prod)
+        sku_prop = ([513] if cols else []) + [514] if p["sku"] else []
+        etsy_send("PUT", f"/listings/{lid}/inventory", json_body={"products": products, "price_on_property": [514], "quantity_on_property": [], "sku_on_property": sku_prop})
+        return len(cols or [None]) * len(plist)
     if options and vname:
         for o in options:
             o = re.sub(r"[()]", "", o).strip()[:20]
