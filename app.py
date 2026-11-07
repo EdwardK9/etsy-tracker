@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.30.1"
+VERSION = "0.30.2"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -327,6 +327,10 @@ def init_db():
             con.execute(f"ALTER TABLE supplies ADD COLUMN {col} REAL DEFAULT 0")
     if "pack_size" not in have_sup:
         con.execute("ALTER TABLE supplies ADD COLUMN pack_size REAL DEFAULT 1")
+    # sizes are shown in mm; anything stored that is obviously mm typed into a cm field gets fixed (stored unit stays cm)
+    for tbl, cols, lim in (("supplies", ("box_l", "box_w", "box_h"), 100), ("products", ("item_l", "item_w", "item_h"), 100), ("products", ("pack_l", "pack_w", "pack_h"), 125)):
+        c1, c2, c3 = cols
+        con.execute(f"UPDATE {tbl} SET {c1}={c1}/10.0, {c2}={c2}/10.0, {c3}={c3}/10.0 WHERE MAX({c1},{c2},{c3})>{lim}")
     if "box_outer" not in have_sup:
         con.execute("ALTER TABLE supplies ADD COLUMN box_outer INTEGER DEFAULT 0")
     if "unit" not in have_sup:

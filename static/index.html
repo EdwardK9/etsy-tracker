@@ -351,7 +351,7 @@ function editProduct(id) {
     <div class="full"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="f_mto" style="width:auto" ${p.made_to_order ? 'checked' : ''}> Print per order — made only when someone buys it (never stocked, so it won’t get “print today” top-ups)</label></div>
     <div id="f_stk" class="full" ${p.made_to_order ? 'style="display:none"' : ''}><div class="grid"><div><label>Low-stock warning at</label><input id="f_re" type="number" value="${p.reorder_at}"></div>
       <div><label>Print up to this many when low</label><input id="f_rt" type="number" value="${p.restock_to || ''}" placeholder="default: double the warning level"></div></div></div>
-    <div class="full"><label>Printed item size L × W × H (cm) — lets the Shipping tab suggest a box</label><div style="display:flex;gap:6px"><input id="f_il" type="number" step="0.1" placeholder="L" value="${p.item_l || ''}"><input id="f_iw" type="number" step="0.1" placeholder="W" value="${p.item_w || ''}"><input id="f_ih" type="number" step="0.1" placeholder="H" value="${p.item_h || ''}"></div></div>
+    <div class="full"><label>Printed item size L × W × H (mm) — lets the Shipping tab suggest a box</label><div style="display:flex;gap:6px"><input id="f_il" type="number" step="0.1" placeholder="L" value="${MM(p.item_l)}"><input id="f_iw" type="number" step="0.1" placeholder="W" value="${MM(p.item_w)}"><input id="f_ih" type="number" step="0.1" placeholder="H" value="${MM(p.item_h)}"></div></div>
     <div class="full" style="border:1px solid var(--line);border-radius:12px;padding:12px"><label style="margin-bottom:2px">Packaging &amp; extras for one item</label>
       <div class="mute" style="font-size:12px;margin-bottom:8px">Everything that goes in the parcel with one of these — the box, paper, tissue… Each sale takes them off your stock, and their cost is added to the price calculator and margin.</div>
       <div id="f_sup"></div>
@@ -369,7 +369,7 @@ function editProduct(id) {
     const base = baseNow();
     const supCost = id => { const s = SUP.find(x => x.id === id); return s ? (s.unit_cost || 0) * 1 : 0; };
     const pack = psel.reduce((t, r) => { const s = SUP.find(x => x.id === r.supply_id); return t + (s ? (s.unit_cost || 0) * r.qty : 0); }, 0);
-    const dims = [n('#f_il'), n('#f_iw'), n('#f_ih')], itemG = n('#f_grams') / Math.max(n('#f_ipp'), 1);
+    const dims = [n('#f_il') / 10, n('#f_iw') / 10, n('#f_ih') / 10], itemG = n('#f_grams') / Math.max(n('#f_ipp'), 1);
     let boxes = [], hint = '';
     if (dims.every(x => x > 0)) {
       const vol = dims[0] * dims[1] * dims[2] * 1.3, a = [...dims].sort((x, y) => y - x);
@@ -432,7 +432,7 @@ function editProduct(id) {
       plate_energy: $('#f_energy', m).value, labour_minutes: $('#f_lab', m).value, print_minutes: $('#f_min', m).value, reorder_at: $('#f_re', m).value, restock_to: $('#f_rt', m).value, made_to_order: $('#f_mto', m).checked, notes: $('#f_notes', m).value, active: $('#f_active', m).checked};
     const saved = await api(id ? 'PUT' : 'POST', id ? `/api/products/${id}` : '/api/products', body);
     const pid = id || (saved && saved.id);
-    if (pid) { await api('PUT', `/api/products/${pid}/supplies`, psel); await api('POST', `/api/products/${pid}/size`, {item_l: $('#f_il', m).value, item_w: $('#f_iw', m).value, item_h: $('#f_ih', m).value}); }
+    if (pid) { await api('PUT', `/api/products/${pid}/supplies`, psel); await api('POST', `/api/products/${pid}/size`, {item_l: CM($('#f_il', m).value), item_w: CM($('#f_iw', m).value), item_h: CM($('#f_ih', m).value)}); }
     m.remove(); route();
   });
   if (id) $('#del', m).onclick = () => { if (confirm('Delete this product?')) safe(async () => { await api('DELETE', `/api/products/${id}`); m.remove(); route(); }); };
@@ -1043,16 +1043,16 @@ function editSupply(s) {
       <div class="full mute" style="font-size:12px">Stock is tracked in cm of roll. On each product you enter the size of the piece you use (e.g. 60 × 40 cm) and it works out how much of the roll that takes. “Cost each” below = cost per <b>cm</b> of roll — it fills itself when you log an arrived order.</div></div></div>
     <div><label>Used on every order (e.g. 1 label)</label><input id="u_po" type="number" step="0.1" value="${e.per_order || 0}"></div>
     <div><label>Expected use per week (optional)</label><input id="u_mw" type="number" step="0.5" value="${e.manual_week || 0}"></div>
-    <div class="full"><label>If this is a box/mailer: inner size L × W × H (cm) and empty weight (g) — used to suggest boxes for orders</label>
-      <div style="display:flex;gap:6px"><input id="u_bl" type="number" step="0.1" placeholder="L" value="${e.box_l || ''}"><input id="u_bw" type="number" step="0.1" placeholder="W" value="${e.box_w || ''}"><input id="u_bh" type="number" step="0.1" placeholder="H" value="${e.box_h || ''}"><input id="u_bg" type="number" step="1" placeholder="g" value="${e.box_g || ''}"></div>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><select id="u_bo" style="width:auto"><option value="0" ${e.box_outer ? '' : 'selected'}>Sizes are inside the box</option><option value="1" ${e.box_outer ? 'selected' : ''}>Sizes are outside the box</option></select><span class="mute" style="font-size:12px">In centimetres (not mm) — e.g. a PIP box 35 × 25 × 2.5</span></div></div>
+    <div class="full"><label>If this is a box/mailer: size L × W × H (mm) and empty weight (g) — used to suggest boxes for orders</label>
+      <div style="display:flex;gap:6px"><input id="u_bl" type="number" step="0.1" placeholder="L" value="${MM(e.box_l)}"><input id="u_bw" type="number" step="0.1" placeholder="W" value="${MM(e.box_w)}"><input id="u_bh" type="number" step="0.1" placeholder="H" value="${MM(e.box_h)}"><input id="u_bg" type="number" step="1" placeholder="g" value="${e.box_g || ''}"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><select id="u_bo" style="width:auto"><option value="0" ${e.box_outer ? '' : 'selected'}>Sizes are inside the box</option><option value="1" ${e.box_outer ? 'selected' : ''}>Sizes are outside the box</option></select><span class="mute" style="font-size:12px">In millimetres — e.g. a PIP box 353 × 250 × 25</span></div></div>
     <div class="full"><label>Notes</label><input id="u_no" value="${esc(e.notes)}"></div>
     ${s ? `<div><label><input type="checkbox" id="u_a" style="width:auto" ${e.active ? 'checked' : ''}> Active</label></div>` : ''}</div>
   <div class="bar" style="margin-top:14px"><button class="b" id="ok">Save</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button><span class="sp"></span>${s ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
   $('#u_mode', m).onchange = () => { const r = $('#u_mode', m).value === 'cm'; $('#u_each', m).style.display = r ? 'none' : ''; $('#u_roll', m).style.display = r ? '' : 'none'; };
   $('#ok', m).onclick = () => safe(async () => {
     const roll = $('#u_mode', m).value === 'cm';
-    const body = {unit: roll ? 'cm' : '', roll_width: roll ? $('#u_rw', m).value : 0, pack_size: roll ? (+$('#u_rl', m).value || 0) * 100 : $('#u_ps', m).value, pack_name: roll ? 'roll' : $('#u_pn', m).value, name: $('#u_n', m).value, link: $('#u_l', m).value, stock: $('#u_s', m).value, unit_cost: $('#u_c', m).value, lead_days: $('#u_ld', m).value, per_order: $('#u_po', m).value, manual_week: $('#u_mw', m).value, notes: $('#u_no', m).value, box_l: $('#u_bl', m).value, box_w: $('#u_bw', m).value, box_h: $('#u_bh', m).value, box_g: $('#u_bg', m).value, box_outer: $('#u_bo', m).value === '1', active: s ? $('#u_a', m).checked : true};
+    const body = {unit: roll ? 'cm' : '', roll_width: roll ? $('#u_rw', m).value : 0, pack_size: roll ? (+$('#u_rl', m).value || 0) * 100 : $('#u_ps', m).value, pack_name: roll ? 'roll' : $('#u_pn', m).value, name: $('#u_n', m).value, link: $('#u_l', m).value, stock: $('#u_s', m).value, unit_cost: $('#u_c', m).value, lead_days: $('#u_ld', m).value, per_order: $('#u_po', m).value, manual_week: $('#u_mw', m).value, notes: $('#u_no', m).value, box_l: CM($('#u_bl', m).value), box_w: CM($('#u_bw', m).value), box_h: CM($('#u_bh', m).value), box_g: $('#u_bg', m).value, box_outer: $('#u_bo', m).value === '1', active: s ? $('#u_a', m).checked : true};
     await api(s ? 'PUT' : 'POST', s ? `/api/supplies/${s.id}` : '/api/supplies', body); m.remove(); route();
   });
   if (s) $('#del', m).onclick = () => { if (confirm('Delete this supply (and unlink it from products)?')) safe(async () => { await api('DELETE', `/api/supplies/${s.id}`); m.remove(); route(); }); };
@@ -1107,10 +1107,11 @@ function priceDialog(init, onUse) {
 
 /* ---------------- Shipping calculator ---------------- */
 const BOXPAD = 0.8;
+const MM = x => (+x > 0 ? +(x * 10).toFixed(1) : ''), CM = v => (+v || 0) / 10, mmTxt = d => d.map(x => +(x * 10).toFixed(1)).join(' × ') + ' mm';
 const boxOf = s => { const d = [+s.box_l, +s.box_w, +s.box_h]; return s.box_outer ? {d: d.map(x => Math.max(+(x - BOXPAD).toFixed(1), 0.1)), od: d} : {d, od: d.map(x => +(x + BOXPAD).toFixed(1))}; };
-const stdBox = ([name, l, w, hh, g]) => ({name, d: [l, w, hh], od: [l, w, hh].map(x => +(x + BOXPAD).toFixed(1)), g, own: false});
+const stdBox = ([name, l, w, hh, g]) => ({name: `Generic ${l * 10}×${w * 10}×${hh * 10} mm`, d: [l, w, hh], od: [l, w, hh].map(x => +(x + BOXPAD).toFixed(1)), g, own: false});
 function bestRate(R, g, dims) { const all = shipOptions(R, g, dims).filter(x => x.ok).sort((a, b) => a.price - b.price); const e = all.find(x => x.etsy), o = e || all[0]; return o ? {...o, notEtsy: !e} : null; }
-function whyNoRate(R, g, dims) { const d = [...dims].sort((a, b) => b - a); const tooBig = R.every(s => { const l = [...s.dims].sort((a, b) => b - a); return !d.every((x, i) => x <= l[i]); }); return tooBig ? 'bigger than every service in the rate table — check the box size is in cm, not mm' : `too heavy (${g} g) for any service this size`; }
+function whyNoRate(R, g, dims) { const d = [...dims].sort((a, b) => b - a); const tooBig = R.every(s => { const l = [...s.dims].sort((a, b) => b - a); return !d.every((x, i) => x <= l[i]); }); return tooBig ? 'bigger than every service in the rate table — check the box and item sizes are in mm' : `too heavy (${g} g) for any service this size`; }
 const svcLabel = o => o ? o.name.replace(' (est.)', '') + (o.notEtsy ? ' — not an Etsy label' : '') : '';
 function shipOptions(rates, g, dims) {
   const d = dims.filter(x => x > 0).sort((a, b) => b - a); while (d.length < 3) d.push(0);
@@ -1139,7 +1140,7 @@ async function shipping() {
   <div class="card" style="margin-bottom:18px"><div class="grid">
     <div class="full"><label>Or enter a parcel by hand — start from a product (loads its saved parcel size)</label><select id="sh_prod"><option value="">— manual —</option>${act.map(p => `<option value="${p.id}" ${String(p.id) === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
     <div><label>Packed weight (g)</label><input id="sh_g" type="number" step="1" value="${cur && cur.pack_g || ''}"></div>
-    <div><label>Length × Width × Height (cm)</label><div style="display:flex;gap:6px"><input id="sh_l" type="number" step="0.1" placeholder="L" value="${cur && cur.pack_l || ''}"><input id="sh_w" type="number" step="0.1" placeholder="W" value="${cur && cur.pack_w || ''}"><input id="sh_h" type="number" step="0.1" placeholder="H" value="${cur && cur.pack_h || ''}"></div></div>
+    <div><label>Length × Width × Height (mm)</label><div style="display:flex;gap:6px"><input id="sh_l" type="number" step="1" placeholder="L" value="${cur ? MM(cur.pack_l) : ''}"><input id="sh_w" type="number" step="1" placeholder="W" value="${cur ? MM(cur.pack_w) : ''}"><input id="sh_h" type="number" step="1" placeholder="H" value="${cur ? MM(cur.pack_h) : ''}"></div></div>
   </div></div>
   <div id="sh_out"></div>
   ${S.etsy_connected ? `<h2>Actual label costs from Etsy</h2>
@@ -1150,7 +1151,7 @@ async function shipping() {
   <div id="sh_rates"></div>
   <div class="bar" style="margin-top:12px"><button class="b" id="sh_save">Save rates</button><button class="g" id="sh_reset">Reset to defaults</button></div>`;
   const out = () => {
-    const g = +$('#sh_g').value || 0, dims = [+$('#sh_l').value || 0, +$('#sh_w').value || 0, +$('#sh_h').value || 0];
+    const g = +$('#sh_g').value || 0, dims = [CM($('#sh_l').value), CM($('#sh_w').value), CM($('#sh_h').value)];
     if (!g) { $('#sh_out').innerHTML = '<div class="mute">Enter the packed weight to see prices.</div>'; return; }
     const o = shipOptions(R.filter(s => !$('#sh_etsy').checked || s.etsy), g, dims), ok = o.filter(x => x.ok).sort((a, b) => a.price - b.price);
     const bestTracked = ok.find(x => x.tracked), {r} = feeModel(false);
@@ -1161,7 +1162,7 @@ async function shipping() {
       <p class="mute">*Etsy charges its transaction/processing fees on the shipping you charge too, so this is the shipping charge that covers your postage after those fees (before the fixed per-order fee).</p>`
       : `<div class="note">No service fits${g > 20000 ? ' — too heavy' : ' these dimensions/weight'}. ${o.filter(x => !x.fitsSize).length === o.length ? 'The parcel is bigger than every service’s size limit.' : 'The weight is over every size-matching service’s limit.'}</div>`;
   };
-  const renderRates = () => $('#sh_rates').innerHTML = `<div class="wrap"><table><tr><th>Service</th><th>Max size (cm)</th><th>Weight band → price (£)</th></tr>${R.map((s, i) => `<tr><td>${esc(s.name)}</td><td class="mute">${s.dims.join(' × ')}</td>
+  const renderRates = () => $('#sh_rates').innerHTML = `<div class="wrap"><table><tr><th>Service</th><th>Max size (mm)</th><th>Weight band → price (£)</th></tr>${R.map((s, i) => `<tr><td>${esc(s.name)}</td><td class="mute">${mmTxt(s.dims)}</td>
     <td>${s.tiers.map((t, j) => `<span style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0"><span class="mute" style="font-size:12px">≤${t[0] >= 1000 ? t[0] / 1000 + 'kg' : t[0] + 'g'}</span><input data-r="${i}" data-t="${j}" type="number" step="0.01" value="${t[1]}" style="width:80px;padding:5px 8px"></span>`).join('')}</td></tr>`).join('')}</table></div>`;
   renderRates();
   ['#sh_g', '#sh_l', '#sh_w', '#sh_h'].forEach(id => $(id).oninput = out);
@@ -1175,7 +1176,7 @@ async function shipping() {
     return {own, std: STD_BOXES.map(stdBox)};
   };
   const renderBox = () => {
-    $('#bx_rows').innerHTML = basket.map((b, i) => { const p = PRODUCTS.find(x => x.id === b.id); return `<div style="display:flex;gap:8px;align-items:center;margin-top:4px"><span style="flex:1">${esc(p.name)}${p.item_l ? ` <span class="mute">${p.item_l}×${p.item_w}×${p.item_h} cm</span>` : ' <span class="bad" style="font-size:12px">no size set — add it in Products → Edit</span>'}</span><span class="mute">qty</span><input data-bq="${i}" type="number" min="1" value="${b.qty}" style="width:70px;padding:5px 8px"><button class="g" data-bx="${i}">✕</button></div>`; }).join('');
+    $('#bx_rows').innerHTML = basket.map((b, i) => { const p = PRODUCTS.find(x => x.id === b.id); return `<div style="display:flex;gap:8px;align-items:center;margin-top:4px"><span style="flex:1">${esc(p.name)}${p.item_l ? ` <span class="mute">${mmTxt([p.item_l, p.item_w, p.item_h])}</span>` : ' <span class="bad" style="font-size:12px">no size set — add it in Products → Edit</span>'}</span><span class="mute">qty</span><input data-bq="${i}" type="number" min="1" value="${b.qty}" style="width:70px;padding:5px 8px"><button class="g" data-bx="${i}">✕</button></div>`; }).join('');
     m_ = document.querySelectorAll('[data-bq]'); m_.forEach(el => el.oninput = () => { basket[+el.dataset.bq].qty = Math.max(1, +el.value || 1); suggestBox(); });
     document.querySelectorAll('[data-bx]').forEach(el => el.onclick = () => { basket.splice(+el.dataset.bx, 1); renderBox(); suggestBox(); });
   };
@@ -1191,10 +1192,10 @@ async function shipping() {
     let cands = own.filter(fits); const usingStd = !cands.length; if (usingStd) cands = std.filter(fits);
     cands = cands.map(bx => { const g = Math.round(itemG + pad + bx.g), outer = bx.od, o = bestRate(R, g, outer); return {...bx, g, outer, best: o, why: o ? '' : whyNoRate(R, g, outer)}; })
       .sort((a, b) => ((a.best ? a.best.price : 99) - (b.best ? b.best.price : 99)) || (a.d[0] * a.d[1] * a.d[2] - b.d[0] * b.d[1] * b.d[2])).slice(0, 4);
-    $('#bx_out').innerHTML = cands.length ? `<div class="wrap"><table><tr><th>Suggested box</th><th>Inner size</th><th class="r">Parcel weight</th><th>Cheapest service</th><th></th></tr>${cands.map((c, i) => `<tr><td>${esc(c.name)}${i === 0 ? ' <span class="pill">best</span>' : ''}${c.own ? (c.stock <= 0 ? ' <span class="bad" style="font-size:12px">(out of stock)</span>' : ` <span class="mute" style="font-size:12px">(${+c.stock.toFixed(0)} in stock)</span>`) : ''}</td><td>${c.d.join(' × ')} cm</td><td class="r">${c.g}g</td><td>${c.best ? `${esc(svcLabel(c.best))} — <b>${money(c.best.price)}</b>` : `<span class="bad">no service fits: ${esc(c.why)}</span>`}</td>
+    $('#bx_out').innerHTML = cands.length ? `<div class="wrap"><table><tr><th>Suggested box</th><th>Inner size</th><th class="r">Parcel weight</th><th>Cheapest service</th><th></th></tr>${cands.map((c, i) => `<tr><td>${esc(c.name)}${i === 0 ? ' <span class="pill">best</span>' : ''}${c.own ? (c.stock <= 0 ? ' <span class="bad" style="font-size:12px">(out of stock)</span>' : ` <span class="mute" style="font-size:12px">(${+c.stock.toFixed(0)} in stock)</span>`) : ''}</td><td>${mmTxt(c.d)}</td><td class="r">${c.g}g</td><td>${c.best ? `${esc(svcLabel(c.best))} — <b>${money(c.best.price)}</b>` : `<span class="bad">no service fits: ${esc(c.why)}</span>`}</td>
       <td class="r"><button class="g" data-use="${i}">Use this parcel</button></td></tr>`).join('')}</table></div>${usingStd ? '<p class="mute">None of your own boxes fit (or none are set up yet), so these are generic sizes. Add your real boxes in Stock → Supplies (with their inner size) and I’ll suggest those instead.</p>' : ''}`
       : '<div class="note">Nothing in the box list is big enough — try splitting into two parcels or add a larger box in Supplies.</div>';
-    document.querySelectorAll('[data-use]').forEach(el => el.onclick = () => { const c = cands[+el.dataset.use]; $('#sh_g').value = c.g; [$('#sh_l'), $('#sh_w'), $('#sh_h')].forEach((inp, k) => inp.value = c.outer[k]); out(); toast('Parcel loaded below'); });
+    document.querySelectorAll('[data-use]').forEach(el => el.onclick = () => { const c = cands[+el.dataset.use]; $('#sh_g').value = c.g; [$('#sh_l'), $('#sh_w'), $('#sh_h')].forEach((inp, k) => inp.value = MM(c.outer[k])); out(); toast('Parcel loaded below'); });
   };
   $('#bx_add').onchange = e => { const id = +e.target.value; if (id) { const ex = basket.find(b => b.id === id); ex ? ex.qty++ : basket.push({id, qty: 1}); e.target.value = ''; renderBox(); suggestBox(); } };
   $('#bx_pad').oninput = suggestBox;
@@ -1212,7 +1213,7 @@ async function shipping() {
 async function useShipping(pid, price) {
   await safe(async () => {
     if (pid) {
-      await api('POST', `/api/products/${pid}/shipping`, {pack_g: +$('#sh_g').value || 0, pack_l: +$('#sh_l').value || 0, pack_w: +$('#sh_w').value || 0, pack_h: +$('#sh_h').value || 0, postage_cost: price});
+      await api('POST', `/api/products/${pid}/shipping`, {pack_g: +$('#sh_g').value || 0, pack_l: CM($('#sh_l').value), pack_w: CM($('#sh_w').value), pack_h: CM($('#sh_h').value), postage_cost: price});
       toast(`Saved: ${money(price)} postage for this product`);
     } else { await api('PUT', '/api/settings', {default_postage_cost: String(price)}); toast(`Default postage set to ${money(price)}`); }
     PRODUCTS = await api('GET', '/api/products'); S = await api('GET', '/api/settings');
