@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.30.6"
+VERSION = "0.31.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -230,7 +230,7 @@ PRODUCT_MIGRATIONS = [
     ("l_return_policy", "TEXT DEFAULT ''"), ("l_shop_section", "TEXT DEFAULT ''"),
     ("l_ship_profile", "TEXT DEFAULT ''"), ("l_readiness", "TEXT DEFAULT ''"),
     ("item_l", "REAL DEFAULT 0"), ("item_w", "REAL DEFAULT 0"), ("item_h", "REAL DEFAULT 0"),
-    ("pack_g", "REAL DEFAULT 0"), ("pack_l", "REAL DEFAULT 0"), ("pack_w", "REAL DEFAULT 0"), ("pack_h", "REAL DEFAULT 0"),
+    ("pack_qty", "INTEGER DEFAULT 1"), ("pack_g", "REAL DEFAULT 0"), ("pack_l", "REAL DEFAULT 0"), ("pack_w", "REAL DEFAULT 0"), ("pack_h", "REAL DEFAULT 0"),
     ("postage_cost", "REAL DEFAULT 0"),
     ("etsy_state", "TEXT DEFAULT ''"), ("etsy_views", "INTEGER DEFAULT 0"), ("etsy_favs", "INTEGER DEFAULT 0"),
     ("etsy_qty", "INTEGER"), ("etsy_synced", "TEXT DEFAULT ''"),
@@ -385,7 +385,8 @@ def labour_rate():
 def unit_cost_of(p):
     per_plate = num(p.get("plate_cost")) + num(p.get("plate_energy"))
     ipp = max(int(num(p.get("items_per_plate"), 1)), 1)
-    return round(per_plate / ipp + num(p.get("extra_cost")) + num(p.get("labour_minutes")) / 60.0 * labour_rate(), 4)
+    pq = max(int(num(p.get("pack_qty"), 1)), 1)
+    return round(per_plate / ipp * pq + num(p.get("extra_cost")) + num(p.get("labour_minutes")) / 60.0 * labour_rate(), 4)
 
 
 def stock_of(pid):
@@ -493,8 +494,8 @@ def api_products():
              num(d.get("extra_cost")), int(num(d.get("print_minutes"))), int(num(d.get("reorder_at"))),
              1 if d.get("active", 1) else 0, d.get("notes", ""), num(d.get("plate_energy")), int(num(d.get("labour_minutes")))))
         pid = cur.lastrowid
-        db().execute("UPDATE products SET made_to_order=?, restock_to=? WHERE id=?",
-                     (1 if d.get("made_to_order") else 0, int(num(d.get("restock_to"))), pid))
+        db().execute("UPDATE products SET made_to_order=?, restock_to=?, pack_qty=? WHERE id=?",
+                     (1 if d.get("made_to_order") else 0, int(num(d.get("restock_to"))), max(int(num(d.get("pack_qty"), 1)), 1), pid))
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (pid, "price", num(d.get("price"))))
         p = one("SELECT * FROM products WHERE id=?", (pid,))
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (pid, "cost", unit_cost_of(p)))
@@ -533,9 +534,9 @@ def api_product(pid):
             new[k] = num(d[k])
     if "made_to_order" in d:
         new["made_to_order"] = 1 if d["made_to_order"] else 0
-    for k in ("items_per_plate", "print_minutes", "reorder_at", "labour_minutes", "restock_to"):
+    for k in ("items_per_plate", "print_minutes", "reorder_at", "labour_minutes", "restock_to", "pack_qty"):
         if k in d:
-            new[k] = max(int(num(d[k])), 1 if k == "items_per_plate" else 0)
+            new[k] = max(int(num(d[k])), 1 if k in ("items_per_plate", "pack_qty") else 0)
     if "archive_id" in d:
         new["archive_id"] = d["archive_id"] or None
     if "active" in d:
@@ -547,11 +548,11 @@ def api_product(pid):
 def save_product(new, old):
     db().execute(
         """UPDATE products SET name=?,sku=?,price=?,archive_id=?,archive_name=?,plate_grams=?,plate_cost=?,
-           items_per_plate=?,extra_cost=?,print_minutes=?,reorder_at=?,active=?,notes=?,plate_energy=?,labour_minutes=?,made_to_order=?,restock_to=? WHERE id=?""",
+           items_per_plate=?,extra_cost=?,print_minutes=?,reorder_at=?,active=?,notes=?,plate_energy=?,labour_minutes=?,made_to_order=?,restock_to=?,pack_qty=? WHERE id=?""",
         (new["name"], new["sku"], new["price"], new["archive_id"], new["archive_name"], new["plate_grams"],
          new["plate_cost"], new["items_per_plate"], new["extra_cost"], new["print_minutes"], new["reorder_at"],
          new["active"], new["notes"], new["plate_energy"], new["labour_minutes"], new.get("made_to_order") or 0,
-         new.get("restock_to") or 0, new["id"]))
+         new.get("restock_to") or 0, max(int(num(new.get("pack_qty"), 1)), 1), new["id"]))
     if abs(num(new["price"]) - num(old["price"])) > 1e-9:
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (new["id"], "price", new["price"]))
     if abs(unit_cost_of(new) - unit_cost_of(old)) > 1e-9:

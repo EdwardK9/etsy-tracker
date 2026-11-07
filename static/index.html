@@ -344,6 +344,8 @@ function editProduct(id) {
     <div><label>Filament per plate (g)</label><input id="f_grams" type="number" step="0.1" value="${p.plate_grams}"></div>
     <div><label>Filament cost per plate (${cur()})</label><input id="f_pcost" type="number" step="0.01" value="${p.plate_cost}"></div>
     <div><label>Items per plate</label><input id="f_ipp" type="number" min="1" value="${p.items_per_plate}"></div>
+    <div><label>Sold as a pack of (items)</label><input id="f_pq" type="number" min="1" step="1" value="${p.pack_qty || 1}"></div>
+    <div class="mute" style="font-size:12px;align-self:end;padding-bottom:12px">1 = a single item. A pack of 4 prints 4, goes in one box, and each sale uses one pack of stock. Print cost and box size are worked out for the whole pack.</div>
     <div><label>Other extra cost per item <span class="mute">(anything not in Supplies)</span></label><input id="f_extra" type="number" step="0.01" value="${p.extra_cost}"></div>
     <div><label>Electricity per plate (£)</label><input id="f_energy" type="number" step="0.001" value="${p.plate_energy || 0}"></div>
     <div><label>Hands-on time per item (min: cleanup, packing)</label><input id="f_lab" type="number" value="${p.labour_minutes || 0}"></div>
@@ -369,10 +371,10 @@ function editProduct(id) {
     const base = baseNow();
     const supCost = id => { const s = SUP.find(x => x.id === id); return s ? (s.unit_cost || 0) * 1 : 0; };
     const pack = psel.reduce((t, r) => { const s = SUP.find(x => x.id === r.supply_id); return t + (s ? (s.unit_cost || 0) * r.qty : 0); }, 0);
-    const dims = [n('#f_il') / 10, n('#f_iw') / 10, n('#f_ih') / 10], itemG = n('#f_grams') / Math.max(n('#f_ipp'), 1);
+    const dims = [n('#f_il') / 10, n('#f_iw') / 10, n('#f_ih') / 10], itemG = n('#f_grams') / Math.max(n('#f_ipp'), 1) * Math.max(n('#f_pq'), 1);
     let boxes = [], hint = '';
     if (dims.every(x => x > 0)) {
-      const vol = dims[0] * dims[1] * dims[2] * 1.3, a = [...dims].sort((x, y) => y - x);
+      const vol = dims[0] * dims[1] * dims[2] * Math.max(n('#f_pq'), 1) * 1.3, a = [...dims].sort((x, y) => y - x);
       const fits = bx => { const b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]) && vol <= bx.d[0] * bx.d[1] * bx.d[2]; };
       const own = SUP.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, ...boxOf(s), g: s.box_g || 0, cost: s.unit_cost || 0, own: true, sid: s.id}));
       const gen = STD_BOXES.map(b => ({...stdBox(b), cost: 0}));
@@ -390,7 +392,7 @@ function editProduct(id) {
   let arch = {id: p.archive_id, name: p.archive_name};
   $('#f_mto', m).onchange = e => { $('#f_stk', m).style.display = e.target.checked ? 'none' : ''; };
   let SUP = [], psel = [];
-  const baseNow = () => { const n = id => +$(id, m).value || 0; return (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0); };
+  const baseNow = () => { const n = id => +$(id, m).value || 0; return (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) * Math.max(n('#f_pq'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0); };
   const packNow = () => psel.reduce((t, r) => { const s = SUP.find(x => x.id === r.supply_id); return t + (s ? (s.unit_cost || 0) * (+r.qty || 0) : 0); }, 0);
   const updSum = () => { const b = baseNow(), k = packNow(); $('#f_packsum', m).innerHTML = `Printing ${money(b)} + packaging <b>${money(k)}</b> = <b>${money(b + k)}</b> to make &amp; pack one`; psel.forEach((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}, el = m.querySelector(`[data-lc="${i}"]`); if (el) el.textContent = money((s.unit_cost || 0) * (+r.qty || 0)); }); };
   const renderSup = () => {
@@ -410,7 +412,7 @@ function editProduct(id) {
   };
   safe(async () => { SUP = await api('GET', '/api/supplies'); if (id) psel = await api('GET', `/api/products/${id}/supplies`); renderSup(); });
   $('#f_supsel', m).onchange = () => { const v = +$('#f_supsel', m).value; if (v) { psel.push({supply_id: v, qty: 1}); renderSup(); } };
-  ['#f_pcost', '#f_energy', '#f_ipp', '#f_extra', '#f_lab', '#f_grams'].forEach(i => $(i, m).addEventListener('input', () => updSum()));
+  ['#f_pcost', '#f_energy', '#f_ipp', '#f_pq', '#f_extra', '#f_lab', '#f_grams'].forEach(i => $(i, m).addEventListener('input', () => updSum()));
   const search = () => safe(async () => {
     const list = await api('GET', '/api/bambuddy/archives?q=' + encodeURIComponent($('#bbq', m).value));
     $('#bbres', m).innerHTML = list.slice(0, 8).map((a, i) => `<div class="pick" data-i="${i}"><b>${esc(a.name)}</b> <span class="mute">${a.grams}g · ${money(a.cost)}${a.cost_estimated ? ' (est.)' : ''}${a.objects ? ' · ' + a.objects + ' objects' : ''} · ${esc(a.status)}</span></div>`).join('') || '<div class="mute">No matches.</div>';
@@ -428,7 +430,7 @@ function editProduct(id) {
   $('#bbgo', m).onclick = search;
   $('#save', m).onclick = () => safe(async () => {
     const body = {name: $('#f_name', m).value, sku: $('#f_sku', m).value, price: $('#f_price', m).value, archive_id: arch.id, archive_name: arch.name,
-      plate_grams: $('#f_grams', m).value, plate_cost: $('#f_pcost', m).value, items_per_plate: $('#f_ipp', m).value, extra_cost: $('#f_extra', m).value,
+      plate_grams: $('#f_grams', m).value, plate_cost: $('#f_pcost', m).value, items_per_plate: $('#f_ipp', m).value, pack_qty: $('#f_pq', m).value, extra_cost: $('#f_extra', m).value,
       plate_energy: $('#f_energy', m).value, labour_minutes: $('#f_lab', m).value, print_minutes: $('#f_min', m).value, reorder_at: $('#f_re', m).value, restock_to: $('#f_rt', m).value, made_to_order: $('#f_mto', m).checked, notes: $('#f_notes', m).value, active: $('#f_active', m).checked};
     const saved = await api(id ? 'PUT' : 'POST', id ? `/api/products/${id}` : '/api/products', body);
     const pid = id || (saved && saved.id);
@@ -1185,8 +1187,8 @@ async function shipping() {
     if (!basket.length) { $('#bx_out').innerHTML = '<div class="mute">Pick the products in the order and I’ll suggest the smallest box that fits, plus the cheapest Etsy label for it.</div>'; return; }
     const items = basket.map(b => ({p: PRODUCTS.find(x => x.id === b.id), q: b.qty}));
     if (items.some(i => !(i.p.item_l > 0 && i.p.item_w > 0 && i.p.item_h > 0))) { $('#bx_out').innerHTML = '<div class="note">Add the printed size (L × W × H) for these products in Products → Edit first.</div>'; return; }
-    const vol = items.reduce((t, i) => t + i.q * i.p.item_l * i.p.item_w * i.p.item_h, 0) * 1.3;
-    const itemG = items.reduce((t, i) => t + i.q * (i.p.items_per_plate ? i.p.plate_grams / i.p.items_per_plate : 0), 0), pad = +$('#bx_pad').value || 0;
+    const vol = items.reduce((t, i) => t + i.q * (i.p.pack_qty || 1) * i.p.item_l * i.p.item_w * i.p.item_h, 0) * 1.3;
+    const itemG = items.reduce((t, i) => t + i.q * (i.p.pack_qty || 1) * (i.p.items_per_plate ? i.p.plate_grams / i.p.items_per_plate : 0), 0), pad = +$('#bx_pad').value || 0;
     const fits = bx => items.every(i => { const a = [i.p.item_l, i.p.item_w, i.p.item_h].sort((x, y) => y - x), b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]); }) && vol <= bx.d[0] * bx.d[1] * bx.d[2];
     const {own, std} = boxes();
     let cands = own.filter(fits); const usingStd = !cands.length; if (usingStd) cands = std.filter(fits);
@@ -1280,8 +1282,8 @@ function packAdvice(o) {
   const supplies = Object.entries(use).map(([id, q]) => { const s = OSUPS.find(x => x.id == id); return s ? {name: s.name, q: s.unit === 'cm' ? +q.toFixed(0) + ' cm' : +q.toFixed(1) + '×'} : null; }).filter(Boolean);
   let box = null, price = null;
   if (items.length && items.every(i => i.p.item_l > 0 && i.p.item_w > 0 && i.p.item_h > 0)) {
-    const vol = items.reduce((t, i) => t + i.q * i.p.item_l * i.p.item_w * i.p.item_h, 0) * 1.3;
-    const itemG = items.reduce((t, i) => t + i.q * (i.p.items_per_plate ? i.p.plate_grams / i.p.items_per_plate : 0), 0);
+    const vol = items.reduce((t, i) => t + i.q * (i.p.pack_qty || 1) * i.p.item_l * i.p.item_w * i.p.item_h, 0) * 1.3;
+    const itemG = items.reduce((t, i) => t + i.q * (i.p.pack_qty || 1) * (i.p.items_per_plate ? i.p.plate_grams / i.p.items_per_plate : 0), 0);
     const fits = bx => items.every(i => { const a = [i.p.item_l, i.p.item_w, i.p.item_h].sort((x, y) => y - x), b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]); }) && vol <= bx.d[0] * bx.d[1] * bx.d[2];
     const own = OSUPS.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, ...boxOf(s), g: s.box_g || 0, own: true}));
     let c = own.filter(fits); if (!c.length) c = STD_BOXES.map(stdBox).filter(fits);
