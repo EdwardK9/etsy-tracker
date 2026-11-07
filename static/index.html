@@ -361,9 +361,27 @@ function editProduct(id) {
   ${id ? '<button class="g bad" id="del">Delete</button>' : ''}</div>`);
   $('#f_calc', m).onclick = () => safe(async () => {
     const n = id => +$(id, m).value || 0, D = await loadShipData();
-    const cost = (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0);
+    if (!SUP.length) SUP = await api('GET', '/api/supplies');
+    const base = (n('#f_pcost') + n('#f_energy')) / Math.max(n('#f_ipp'), 1) + n('#f_extra') + n('#f_lab') / 60 * (+S.labour_rate_per_hour || 0);
+    const supCost = id => { const s = SUP.find(x => x.id === id); return s ? (s.unit_cost || 0) * 1 : 0; };
+    const pack = psel.reduce((t, r) => { const s = SUP.find(x => x.id === r.supply_id); return t + (s ? (s.unit_cost || 0) * r.qty : 0); }, 0);
+    const dims = [n('#f_il'), n('#f_iw'), n('#f_ih')], itemG = n('#f_grams') / Math.max(n('#f_ipp'), 1);
+    let boxes = [], hint = '';
+    if (dims.every(x => x > 0)) {
+      const vol = dims[0] * dims[1] * dims[2] * 1.3, a = [...dims].sort((x, y) => y - x);
+      const fits = bx => { const b = [...bx.d].sort((x, y) => y - x); return a.every((x, k) => x <= b[k]) && vol <= bx.d[0] * bx.d[1] * bx.d[2]; };
+      const own = SUP.filter(s => s.active && s.box_l > 0).map(s => ({name: s.name, d: [s.box_l, s.box_w, s.box_h], g: s.box_g || 0, cost: s.unit_cost || 0, own: true, sid: s.id}));
+      const gen = STD_BOXES.map(([name, l, w, hh, g]) => ({name, d: [l, w, hh], g, cost: 0, own: false}));
+      boxes = [...own, ...gen].filter(fits).map(bx => {
+        const g = Math.round(itemG + bx.g), op = shipOptions(D.R.filter(x => x.etsy), g, bx.d.map(x => x + 1)).filter(x => x.ok).sort((x, y) => x.price - y.price)[0];
+        return {...bx, weight: g, price: op ? op.price : null, svc: op ? op.name.replace(' (est.)', '') : ''};
+      }).sort((x, y) => (x.own === y.own ? 0 : x.own ? -1 : 1) || ((x.price ?? 99) - (y.price ?? 99)) || (x.d[0] * x.d[1] * x.d[2] - y.d[0] * y.d[1] * y.d[2]));
+      if (!boxes.length) hint = 'No box fits that item size — check the L × W × H, or add a bigger box in Supplies.';
+    } else hint = 'Enter the printed item size (L × W × H) in the form to get a box suggestion — until then postage uses your default.';
+    const inPsel = bx => bx.own && psel.some(r => r.supply_id === bx.sid);
+    const pre = boxes.find(inPsel) || boxes.find(b => b.own) || boxes[0];
     const [po, ps] = postageFor(p, D), [sh, ss] = shipChargedFor(p, D);
-    priceDialog({cost, postage: po, ship: sh, postageSrc: ps, shipSrc: ss, name: $('#f_name', m).value || 'this product'}, v => { $('#f_price', m).value = v.toFixed(2); });
+    priceDialog({base, pack, boxes, hint, preIdx: pre ? boxes.indexOf(pre) : -1, inPsel, postage: po, ship: sh, postageSrc: ps, shipSrc: ss, name: $('#f_name', m).value || 'this product'}, v => { $('#f_price', m).value = v.toFixed(2); });
   });
   let arch = {id: p.archive_id, name: p.archive_name};
   $('#f_mto', m).onchange = e => { $('#f_stk', m).style.display = e.target.checked ? 'none' : ''; };
@@ -1038,18 +1056,32 @@ function restockSupply(id, name) {
 }
 
 function priceDialog(init, onUse) {
+  const bx = init.boxes || [];
   const m = modal(`<h2 style="margin-top:0">Work out a price — ${esc(init.name)}</h2><div class="grid">
-    <div><label>Cost to make one (£)</label><input id="pd_cost" type="number" step="0.01" value="${init.cost.toFixed(2)}"></div>
-    <div><label>Postage you pay (£)</label><input id="pd_post" type="number" step="0.01" value="${(+init.postage || 0).toFixed(2)}"><div class="mute" style="font-size:12px;margin-top:4px">Auto-filled from ${esc(init.postageSrc || 'your default')}</div></div>
+    <div class="full"><label>Box / parcel</label><select id="pd_box">${bx.map((b, i) => `<option value="${i}" ${i === init.preIdx ? 'selected' : ''}>${esc(b.name)}${b.own ? '' : ' (generic)'} — ${b.price != null ? money(b.price) + ' ' + esc(b.svc) : 'no Etsy label fits'}</option>`).join('')}<option value="-1" ${init.preIdx < 0 ? 'selected' : ''}>Don’t use a box — enter postage myself</option></select>
+      <div class="mute" style="font-size:12px;margin-top:4px">${bx.length ? 'Cheapest fitting box picked for you — change it if you pack differently. Postage and packaging cost update.' : esc(init.hint || '')}</div></div>
+    <div><label>Cost to make one (£)</label><input id="pd_cost" type="number" step="0.01"><div class="mute" id="pd_cb" style="font-size:12px;margin-top:4px"></div></div>
+    <div><label>Postage you pay (£)</label><input id="pd_post" type="number" step="0.01"><div class="mute" id="pd_ps" style="font-size:12px;margin-top:4px"></div></div>
     <div><label>Shipping you charge the buyer (£)</label><input id="pd_ship" type="number" step="0.01" value="${(+init.ship || 0).toFixed(2)}"><div class="mute" style="font-size:12px;margin-top:4px">Auto-filled from ${esc(init.shipSrc || 'your default')}</div></div>
     <div><label><input type="checkbox" id="pd_ad" style="width:auto"> Sold via Offsite Ads</label></div>
     <div><label>I want to target</label><select id="pd_mode"><option value="margin">a profit margin %</option><option value="profit">a profit amount £</option></select></div>
     <div><label id="pd_tl">Target margin %</label><input id="pd_target" type="number" step="0.5" value="${+S.target_margin_pct || 40}"></div></div>
-  <div id="pd_out" style="margin-top:14px"></div>
+  <div id="pd_warn"></div><div id="pd_out" style="margin-top:14px"></div>
   <div class="bar" style="margin-top:14px"><button class="b" id="pd_use">Use this price</button><button class="g" onclick="this.closest('.modal').remove()">Cancel</button></div>`);
+  const pickBox = () => {
+    const b = bx[+$('#pd_box', m).value];
+    const boxCost = b && b.own && !init.inPsel(b) ? b.cost : 0;
+    $('#pd_cost', m).value = (init.base + init.pack + boxCost).toFixed(2);
+    $('#pd_cb', m).textContent = `Print ${money(init.base)} + packaging ${money(init.pack + boxCost)}`;
+    $('#pd_post', m).value = (b && b.price != null ? b.price : (+init.postage || 0)).toFixed(2);
+    $('#pd_ps', m).textContent = b ? (b.price != null ? `${b.name}, ~${b.weight} g packed → ${b.svc}` : 'No Etsy label fits this parcel — enter postage') : 'Auto-filled from ' + (init.postageSrc || 'your default');
+  };
+  $('#pd_box', m).onchange = () => { pickBox(); calc(); };
+  pickBox();
   let best = 0;
   const calc = () => {
     const o = {cost: +$('#pd_cost', m).value || 0, ship: +$('#pd_ship', m).value || 0, postage: +$('#pd_post', m).value || 0, offsite: $('#pd_ad', m).checked};
+    $('#pd_warn', m).innerHTML = init.base === 0 ? '<div class="note" style="margin-top:10px">⚠ Print cost is £0 — enter the filament weight and cost (or link a Bambuddy archive) in the form so the price covers your material.</div>' : '';
     const mode = $('#pd_mode', m).value, target = +$('#pd_target', m).value || 0;
     $('#pd_tl', m).textContent = mode === 'margin' ? 'Target margin %' : 'Target profit per item (£)';
     const raw = priceCalc({...o, mode, target}), be = priceCalc({...o, mode: 'profit', target: 0});
