@@ -63,6 +63,7 @@ tr+tr td{border-top:1px solid var(--line)}
 th{color:var(--mute);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.6px;background:var(--th)}
 tbody tr:hover td,tr:hover>td{background:var(--hover2)}
 td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+td.clip{max-width:260px;overflow:hidden;text-overflow:ellipsis}
 h2{font-size:13px;margin:26px 0 10px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.7px}
 .bar{display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
 button.b,a.b{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border:0;border-radius:10px;padding:9px 16px;cursor:pointer;font:inherit;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:6px;box-shadow:0 6px 18px #f0461e33;transition:.15s}
@@ -94,7 +95,7 @@ th.srt{cursor:pointer;user-select:none}th.srt:hover{color:var(--text)}th.srt::af
 .col small{color:var(--mute);font-size:11px}
 .legend{display:flex;gap:14px;color:var(--mute);font-size:12px;margin:-14px 0 20px}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:6px}
-@media(max-width:820px){.app{flex-direction:column}.side{width:auto;height:auto;position:static;flex-direction:row;align-items:center;padding:10px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}.logo{padding:0 8px 0 4px}.logo b{display:none}nav{flex-direction:row}nav button{padding:8px 11px;white-space:nowrap}nav button span{display:none}nav button.on span{display:inline}main{padding:18px 14px 50px}.grid{grid-template-columns:1fr}}
+@media(max-width:820px){.app{flex-direction:column}.side{width:auto;height:auto;position:static;flex-direction:row;align-items:center;padding:10px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}.logo{padding:0 8px 0 4px}.logo b{display:none}nav{flex-direction:row}nav button{padding:8px 11px;white-space:nowrap}nav button span{display:none}nav button.on span{display:inline}main{padding:18px 14px 50px}.grid{grid-template-columns:minmax(0,1fr)}.subtabs{overflow-x:auto;scrollbar-width:none}.subtabs::-webkit-scrollbar{display:none}.subtabs a{flex:none;padding:9px 13px}select{max-width:100%}th,td{padding:10px 10px}.wrap td:first-child{white-space:normal;min-width:110px;max-width:46vw;overflow-wrap:anywhere}.suprow{grid-template-columns:1fr 60px 58px 28px!important}.suprow>span:first-child{grid-column:1/-1}.meas{grid-template-columns:1fr!important}.mrow{grid-template-columns:1fr 64px 34px!important}.mrow .ml{grid-column:1/-1}}
 </style>
 </head>
 <body>
@@ -175,6 +176,7 @@ function nav() {
   const g = groupOf(cur);
   $('#nav').innerHTML = GROUPS.map(([k, l, subs]) => `<button class="${k === g[0] ? 'on' : ''}" onclick="location.hash='${k === g[0] ? cur : (localStorage.getItem('sub_' + k) || subs[0][0])}'">${ic(k)}<span>${l}</span></button>`).join('');
   $('#subbar').innerHTML = g[2].length > 1 ? `<div class="subtabs">${g[2].map(([k, l]) => `<a href="#${k}" class="${k === cur ? 'on' : ''}">${l}</a>`).join('')}</div>` : '';
+  const onTab = $('#subbar .on'); if (onTab) onTab.parentNode.scrollLeft = onTab.offsetLeft - 40;
   return cur;
 }
 /* ---------------- sortable + filterable tables ---------------- */
@@ -409,7 +411,7 @@ function editProduct(id) {
   const updSum = () => { const b = baseNow(), k = packNow(); $('#f_packsum', m).innerHTML = `Printing ${money(b)} + packaging <b>${money(k)}</b> = <b>${money(b + k)}</b> to make &amp; pack one`; psel.forEach((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}, el = m.querySelector(`[data-lc="${i}"]`); if (el) el.textContent = money((s.unit_cost || 0) * (+r.qty || 0)); }); };
   const renderSup = () => {
     $('#f_sup', m).innerHTML = psel.map((r, i) => { const s = SUP.find(x => x.id === r.supply_id) || {}, roll = s.unit === 'cm';
-      return `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="display:grid;grid-template-columns:1fr 72px 70px 70px 28px;gap:8px;align-items:center"><span>${esc(s.name || '?')}${s.box_l > 0 ? ' <span class="mute" style="font-size:11px">box</span>' : ''}</span><input data-q="${i}" type="number" step="any" min="0" value="${r.qty}" style="padding:5px 8px;text-align:right"><span class="mute" style="font-size:12px">${roll ? 'cm of roll' : 'per item'}</span><b data-lc="${i}" style="text-align:right"></b><button class="g" data-x="${i}" title="Remove">✕</button></div>
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="suprow" style="display:grid;grid-template-columns:1fr 72px 70px 70px 28px;gap:8px;align-items:center"><span>${esc(s.name || '?')}${s.box_l > 0 ? ' <span class="mute" style="font-size:11px">box</span>' : ''}</span><input data-q="${i}" type="number" step="any" min="0" value="${r.qty}" style="padding:5px 8px;text-align:right"><span class="mute" style="font-size:12px">${roll ? 'cm of roll' : 'per item'}</span><b data-lc="${i}" style="text-align:right"></b><button class="g" data-x="${i}" title="Remove">✕</button></div>
       ${roll ? `<div class="mute" style="font-size:12px;margin-top:4px;display:flex;gap:6px;align-items:center">Piece size: <input data-pl="${i}" type="number" placeholder="length" style="width:70px;padding:4px 6px"> × <input data-pw="${i}" type="number" placeholder="${s.roll_width ? 'width (blank = ' + s.roll_width + ')' : 'width'}" style="width:110px;padding:4px 6px"> cm → fills the amount above</div>` : ''}</div>`; }).join('') || '<div class="mute" style="font-size:12px">Nothing added yet.</div>';
     m.querySelectorAll('[data-pl],[data-pw]').forEach(el => el.oninput = () => {
       const i = +(el.dataset.pl ?? el.dataset.pw), s = SUP.find(x => x.id === psel[i].supply_id) || {}, row = el.closest('div').parentNode;
@@ -431,7 +433,7 @@ function editProduct(id) {
     m.querySelectorAll('.pick').forEach(el => el.onclick = () => {
       const a = list[+el.dataset.i]; arch = {id: a.id, name: a.name};
       $('#f_grams', m).value = a.grams; $('#f_pcost', m).value = a.cost.toFixed(2);
-      if (a.minutes) $('#f_min', m).value = a.minutes;
+      if (a.minutes) $('#f_min', m).value = Math.round(a.minutes / Math.max(a.objects || +$('#f_ipp', m).value || 1, 1));
       $('#f_energy', m).value = (a.energy || 0).toFixed(3);
       if (a.objects) $('#f_ipp', m).value = a.objects;
       if (!$('#f_name', m).value) $('#f_name', m).value = a.name;
@@ -668,7 +670,7 @@ async function measuresView() {
   MEAS = await api('GET', '/api/measurements');
   if (!PRODUCTS.length) PRODUCTS = await api('GET', '/api/products');
   $('#main').innerHTML = `<div class="top"><h1>Measurements</h1><span class="sp"></span><button class="b" onclick="newMeasure()">+ New item</button></div>
-  <div style="display:grid;grid-template-columns:300px 1fr;gap:18px;align-items:start">
+  <div class="meas" style="display:grid;grid-template-columns:300px minmax(0,1fr);gap:18px;align-items:start">
     <div><input id="mq" placeholder="Search…" value="${esc(localStorage.measQ || '')}" style="margin-bottom:10px"><div id="mlist"></div></div>
     <div id="mdet"></div></div>`;
   $('#mq').oninput = e => { localStorage.measQ = e.target.value; measList(); };
@@ -926,7 +928,7 @@ async function stock() {
   <h2>Current stock</h2>
   <div class="wrap"><table><tr><th>Product</th><th class="r">Printed (good)</th><th class="r">Failed</th><th class="r">Sold</th><th class="r">In stock</th><th class="r">Value at cost</th></tr>
   ${PRODUCTS.filter(p => p.active || p.made || p.sold).map(p => `<tr><td>${esc(p.name)}</td><td class="r">${p.made}</td><td class="r">${p.failed}</td><td class="r">${p.sold}</td>
-    <td class="r ${p.stock < 0 ? 'bad' : ''}"><b>${p.stock}</b></td><td class="r">${money(Math.max(p.stock, 0) * p.unit_cost)}</td></tr>`).join('') || '<tr><td colspan=9 class="mute">Add a product first.</td></tr>'}
+    <td class="r ${p.stock < 0 && !p.made_to_order ? 'bad' : ''}">${p.made_to_order && p.stock <= 0 ? '<span class="mute">per order</span>' : `<b>${p.stock}</b>`}</td><td class="r">${money(Math.max(p.stock, 0) * p.unit_cost)}</td></tr>`).join('') || '<tr><td colspan=9 class="mute">Add a product first.</td></tr>'}
   </table></div>
   <h2>Print log</h2>
   <div class="wrap"><table><tr><th>Date</th><th>Product</th><th class="r">Good</th><th class="r">Failed</th><th class="r">Unit cost</th><th class="r">Total cost</th><th>Notes</th><th></th></tr>
@@ -956,7 +958,7 @@ async function sales() {
   $('#main').innerHTML = `
 <div class="top"><h1>Sales</h1><span class="sp"></span>${S.etsy_connected ? '<button class="b alt" onclick="quickSync()">↻ Sync from Etsy</button>' : ''}<a class="b alt" href="/api/export/sales.csv">Export CSV</a><button class="b" onclick="editSale()">+ Record sale</button></div>
   <div class="wrap"><table><tr><th>Date</th><th>Order</th><th>Product</th><th class="r">Qty</th><th class="r">Revenue</th><th class="r">Fees</th><th class="r">Postage</th><th class="r">Profit</th><th>Status</th><th></th></tr>
-  ${L.map(s => `<tr><td>${s.date}</td><td class="mute">${esc(s.order_ref)}</td><td>${esc(s.product)}</td><td class="r">${s.qty}</td><td class="r">${money(s.revenue)}</td>
+  ${L.map(s => `<tr><td>${s.date}</td><td class="mute">${esc(s.order_ref)}</td><td class="clip" title="${esc(s.product)}${s.variation ? ' — ' + esc(s.variation) : ''}">${esc(s.product)}</td><td class="r">${s.qty}</td><td class="r">${money(s.revenue)}</td>
     <td class="r">${money(s.fees)}</td><td class="r">${money(s.postage_cost)}</td><td class="r ${cls(s.profit)}">${money(s.profit)}</td><td><span class="st ${s.status === 'shipped' ? 'shipped' : ''}">${(s.status || 'shipped').replace('_', ' ')}</span></td>
     <td><button class="g" onclick='editSale(${JSON.stringify(s).replace(/'/g, '&#39;')})'>Edit</button> <button class="g" onclick="del('sales',${s.id})">✕</button></td></tr>`).join('') || '<tr><td colspan=10 class="mute">No sales yet.</td></tr>'}
   </table></div>`;

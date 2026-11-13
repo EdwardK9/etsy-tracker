@@ -9,3 +9,8 @@ Stacks → Add stack → Repository → this repo, compose path `docker-compose.
 
 ## Run locally
     pip install flask && DB_PATH=./etsy.db python app.py
+
+## Run the tests
+    pip install flask pytest && pytest -q
+
+The tests cover fees, costs and profit, stock and the order pipeline, Print today, supplies, Etsy order sync and the CSV import. Etsy is faked, so they need no account or network.
