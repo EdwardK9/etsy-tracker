@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
-VERSION = "0.33.1"
+VERSION = "0.34.0"
 DB_PATH = os.environ.get("DB_PATH", "/data/etsy.db")
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
@@ -399,10 +399,12 @@ def parse_var_map(raw):
 
 def variant_mult(p, var_text):
     """Items used per unit sold, from the product's pack options (e.g. 'Quantity: 4' -> 4). Longest matching text wins."""
-    vt = (var_text or "").lower()
+    def norm(t):  # Etsy's API writes "Quantity: 4", its CSV export "Quantity:4"
+        return re.sub(r"\s*:\s*", ":", (t or "").lower())
+    vt = norm(var_text)
     best = None
     for o in parse_var_map(p.get("var_map")):
-        if o["match"].lower() in vt and (best is None or len(o["match"]) > len(best["match"])):
+        if norm(o["match"]) in vt and (best is None or len(o["match"]) > len(best["match"])):
             best = o
     return best["mult"] if best else 1
 
@@ -578,8 +580,11 @@ def save_product(new, old):
          new.get("restock_to") or 0, max(int(num(new.get("pack_qty"), 1)), 1), new["id"]))
     if "var_map" in new:
         db().execute("UPDATE products SET var_map=? WHERE id=?", (new["var_map"], new["id"]))
-        for sl in rows("SELECT id,variation FROM sales WHERE product_id=?", (new["id"],)):
-            db().execute("UPDATE sales SET mult=? WHERE id=?", (variant_mult(new, sl["variation"]), sl["id"]))
+        for sl in rows("SELECT id,variation,mult,unit_cost FROM sales WHERE product_id=?", (new["id"],)):
+            mult, was = variant_mult(new, sl["variation"]), sl["mult"] or 1
+            if mult != was:
+                # unit_cost is the cost of everything one sold unit used, so it scales with the items per unit
+                db().execute("UPDATE sales SET mult=?, unit_cost=? WHERE id=?", (mult, round(sl["unit_cost"] / was * mult, 4), sl["id"]))
     if abs(num(new["price"]) - num(old["price"])) > 1e-9:
         db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (new["id"], "price", new["price"]))
     if abs(unit_cost_of(new) - unit_cost_of(old)) > 1e-9:
@@ -671,7 +676,7 @@ def api_bb_archives():
 @app.route("/api/bambuddy/test")
 def api_bb_test():
     try:
-        a = as_list(bb_get("/archives/", {"limit": 1}))
+        bb_get("/archives/", {"limit": 1})
         try:
             sp = as_list(bb_get("/inventory/spools"))
             spools = len(sp)
@@ -775,11 +780,17 @@ def api_sale(sid):
     if not old:
         return jsonify({"error": "not found"}), 404
     p = one("SELECT * FROM products WHERE id=?", (d.get("product_id") or old["product_id"],))
+    if not p:
+        return jsonify({"error": "Pick a product."}), 400
     qty, price, ship, disc, offsite, fees = sale_values(d, p, settings())
     db().execute("""UPDATE sales SET date=?,order_ref=?,product_id=?,qty=?,unit_price=?,shipping_charged=?,discount=?,
                     postage_cost=?,offsite_ad=?,fees=?,notes=? WHERE id=?""",
                  (d.get("date") or old["date"], d.get("order_ref", ""), p["id"], qty, price, ship, disc,
                   num(d.get("postage_cost")), offsite, fees, d.get("notes", ""), sid))
+    if p["id"] != old["product_id"]:
+        # a different product was sold, so the cost snapshot and pack size of the old one no longer apply
+        mult = variant_mult(p, old["variation"])
+        db().execute("UPDATE sales SET unit_cost=?, mult=? WHERE id=?", (round(unit_cost_of(p) * mult, 4), mult, sid))
     db().commit()
     return jsonify({"ok": True})
 
@@ -824,7 +835,6 @@ def goal_info():
         days = max((datetime.now() - datetime.strptime(first, "%Y-%m-%d")).days, 14)
         per_day = net / days
         if net < target and per_day > 0:
-            from datetime import timedelta
             eta = (datetime.now() + timedelta(days=int((target - net) / per_day) + 1)).strftime("%Y-%m-%d")
     return {"target": target, "net": round(net, 2), "pct": round(max(min(net / target * 100, 100), 0), 1) if target else 0,
             "per_day": round(per_day, 2), "eta": eta, "since": first}
@@ -897,6 +907,7 @@ HEADER_MAP = {
     "sku": ["sku"],
     "shipping": ["shipping", "order shipping", "shipping price"],
     "discount": ["discount amount", "discount"],
+    "variation": ["variations", "variation"],
 }
 
 
@@ -948,7 +959,9 @@ def api_import_etsy():
             db().execute("INSERT INTO history(product_id,kind,value) VALUES(?,?,?)", (cur.lastrowid, "price", price))
             p = one("SELECT * FROM products WHERE id=?", (cur.lastrowid,))
             created += 1
-        if order and one("SELECT 1 AS x FROM sales WHERE order_ref=? AND product_id=?", (order, p["id"])):
+        var_text = (r.get(col["variation"]) or "").strip() if "variation" in col else ""
+        if order and one("SELECT 1 AS x FROM sales WHERE order_ref=? AND product_id=? AND (variation=? OR variation='' OR ?='')",
+                         (order, p["id"], var_text, var_text)):
             skipped += 1
             continue
         first = order not in seen_orders
@@ -962,9 +975,9 @@ def api_import_etsy():
         qty, price, ship, disc, offsite, fees = sale_values(d, p, s)
         db().execute(
             """INSERT INTO sales(date,order_ref,product_id,qty,unit_price,shipping_charged,discount,postage_cost,
-               offsite_ad,fees,unit_cost,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+               offsite_ad,fees,unit_cost,source,variation,mult) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (parse_date(r.get(col.get("date", ""), "")), order, p["id"], qty, price, ship, disc, 0, 0, fees,
-             unit_cost_of(p), "etsy-csv"))
+             round(unit_cost_of(p) * variant_mult(p, var_text), 4), "etsy-csv", var_text, variant_mult(p, var_text)))
         added += 1
     db().commit()
     return jsonify({"added": added, "skipped_duplicates": skipped, "products_created": created})
@@ -1029,7 +1042,6 @@ def http_json(url, headers=None, form=None):
 
 
 def etsy_token_request(form):
-    s = settings()
     tok = http_json(ETSY_TOKEN_URL, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}, form=form)
     set_setting("etsy_access_token", tok["access_token"])
     set_setting("etsy_refresh_token", tok["refresh_token"])
@@ -1156,7 +1168,6 @@ def api_etsy_sync():
                     if dup:
                         skipped += 1
                         first = False
-                        upd = []
                         if r.get("is_shipped") and dup["status"] != "shipped":
                             db().execute("UPDATE sales SET status='shipped' WHERE id=?", (dup["id"],))
                         if var_text and not dup["variation"]:
@@ -1266,7 +1277,6 @@ def api_label_costs():
 
 # ---------------------------------------------------------------- listings (Etsy drafts)
 import mimetypes
-import re
 import uuid
 
 TAX_CACHE = {"nodes": None}
@@ -1583,7 +1593,7 @@ def listing_inputs(s, p):
         form["tags"] = ",".join(tags)
     if mats:
         form["materials"] = ",".join(mats)
-    per_item_g = num(p["plate_grams"]) / max(p["items_per_plate"] or 1, 1)
+    per_item_g = num(p["plate_grams"]) / max(p["items_per_plate"] or 1, 1) * max(p["pack_qty"] or 1, 1)
     if per_item_g > 0:
         form["item_weight"] = round(per_item_g, 1)
         form["item_weight_unit"] = "g"
@@ -2347,14 +2357,15 @@ def print_today():
             topup = max(target - (stock + owed), 0)  # stock + owed = units made and not allocated
         if not owed and not topup:
             continue
-        per_g = num(p["plate_grams"]) / max(p["items_per_plate"] or 1, 1)
         per = max(p["items_per_plate"] or 1, 1)
+        per_g = num(p["plate_grams"]) / per
+        items = (owed + topup) * max(p["pack_qty"] or 1, 1)  # stock and orders are counted in packs; the printer makes items
         out.append({"product_id": p["id"], "name": p["name"], "made_to_order": p["made_to_order"], "stock": stock,
                     "sale_ids": [r["id"] for r in rows("SELECT id FROM sales WHERE product_id=? AND status='to_print'", (p["id"],))],
                     "printing_ids": [r["id"] for r in rows("SELECT id FROM sales WHERE product_id=? AND status='printing'", (p["id"],))],
                     "orders": [{"variation": w["variation"], "qty": w["q"], "started": bool(w["started"]), "oldest": w["oldest"]} for w in waiting],
-                    "owed": owed, "topup": topup, "total": owed + topup, "grams": round(per_g * (owed + topup), 1),
-                    "plates": -(-(owed + topup) // per), "minutes": int(num(p["print_minutes"]) * -(-(owed + topup) // per))})
+                    "owed": owed, "topup": topup, "total": owed + topup, "grams": round(per_g * items, 1),
+                    "plates": int(-(-items // per)), "minutes": int(num(p["print_minutes"]) * items)})
     return out
 
 
@@ -2385,26 +2396,32 @@ def api_alerts():
     return jsonify(al)
 
 
+def autosync_once():
+    """Run the Etsy order sync if it is switched on and due, and record how it went."""
+    con = sqlite3.connect(DB_PATH)
+    s = {r[0]: r[1] for r in con.execute("SELECT key,value FROM settings")}
+    con.close()
+    if not (s.get("etsy_autosync", "1") == "1" and s.get("etsy_shop_id") and s.get("etsy_refresh_token")):
+        return
+    every = max(5.0, float(s.get("etsy_autosync_mins") or 15)) * 60
+    if time.time() - float(s.get("etsy_autosync_last") or 0) < every:
+        return
+    with app.test_request_context("/api/etsy/sync", method="POST", json={}):
+        r = app.make_response(api_etsy_sync())  # errors come back as (response, status)
+        ok = r.status_code == 200
+        j = r.get_json() or {}
+        msg = ("OK %s — %s new lines" % (datetime.now().strftime("%d %b %H:%M"), j.get("added", 0))) if ok else \
+              ("FAILED %s — %s" % (datetime.now().strftime("%d %b %H:%M"), j.get("error", "?")))
+        set_setting("etsy_autosync_last", str(int(time.time())))
+        set_setting("etsy_autosync_status", msg)
+        db().commit()
+
+
 def _autosync_loop():
     while True:
         time.sleep(300)
         try:
-            con = sqlite3.connect(DB_PATH)
-            s = {r[0]: r[1] for r in con.execute("SELECT key,value FROM settings")}
-            con.close()
-            if s.get("etsy_autosync", "1") == "1" and s.get("etsy_shop_id") and s.get("etsy_refresh_token"):
-                every = max(5.0, float(s.get("etsy_autosync_mins") or 15)) * 60
-                if time.time() - float(s.get("etsy_autosync_last") or 0) >= every:
-                    with app.test_request_context("/api/etsy/sync", method="POST", json={}):
-                        resp = api_etsy_sync()
-                        r = resp[0] if isinstance(resp, tuple) else resp
-                        ok = r.status_code == 200
-                        j = r.get_json() or {}
-                        msg = ("OK %s — %s new lines" % (datetime.now().strftime("%d %b %H:%M"), j.get("added", 0))) if ok else \
-                              ("FAILED %s — %s" % (datetime.now().strftime("%d %b %H:%M"), j.get("error", "?")))
-                        set_setting("etsy_autosync_last", str(int(time.time())))
-                        set_setting("etsy_autosync_status", msg)
-                        db().commit()
+            autosync_once()
         except Exception:
             pass
 
@@ -2461,7 +2478,7 @@ def _pdf_response(title, build):
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak, KeepTogether
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
     from reportlab.lib.utils import ImageReader
     from xml.sax.saxutils import escape as esc
 

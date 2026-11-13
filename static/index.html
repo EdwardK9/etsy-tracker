@@ -431,7 +431,7 @@ function editProduct(id) {
     m.querySelectorAll('.pick').forEach(el => el.onclick = () => {
       const a = list[+el.dataset.i]; arch = {id: a.id, name: a.name};
       $('#f_grams', m).value = a.grams; $('#f_pcost', m).value = a.cost.toFixed(2);
-      if (a.minutes) $('#f_min', m).value = a.minutes;
+      if (a.minutes) $('#f_min', m).value = Math.round(a.minutes / Math.max(a.objects || +$('#f_ipp', m).value || 1, 1));
       $('#f_energy', m).value = (a.energy || 0).toFixed(3);
       if (a.objects) $('#f_ipp', m).value = a.objects;
       if (!$('#f_name', m).value) $('#f_name', m).value = a.name;
