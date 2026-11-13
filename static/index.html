@@ -34,7 +34,14 @@ body{margin:0;background:radial-gradient(1200px 500px at 70% -10%,var(--glow),tr
 .st{font-size:11px;padding:3px 9px;border-radius:20px;font-weight:600;background:#ff7a3d1f;color:var(--acc)}
 .st.shipped{background:#34d3991a;color:var(--good)}
 .print-only{display:none}
-@media print{.side,.top,.kan,.no-print,#toast{display:none!important}.print-only{display:block!important;color:#000}.print-only .slip{page-break-inside:avoid;border:1px solid #000;padding:10px;margin-bottom:10px;font-size:13px}body{background:#fff}.app,main{display:block!important;padding:0!important}}
+/* Printed lists go to a 4x6in label printer: black on white, small type, entries run on so a label is filled before the next one starts */
+@page{size:4in 6in;margin:3mm}
+@media print{.side,.top,.kan,.no-print,#toast,#subbar{display:none!important}body:has(.print-only) #main>*:not(.print-only){display:none!important}
+html,body{background:#fff!important}.app,main{display:block!important;padding:0!important;max-width:none!important}
+.print-only{display:block!important;color:#000;font:9.5pt/1.25 Arial,Helvetica,sans-serif}
+.print-only h2{font-size:11pt;margin:0 0 1mm;color:#000;text-transform:none;letter-spacing:0;display:flex;justify-content:space-between;align-items:baseline}.print-only h2 small{font-weight:400;font-size:8pt}
+.print-only .slip{break-inside:avoid;border-top:1px solid #000;padding:1mm 0}.print-only .slip .hd{display:flex;justify-content:space-between;gap:2mm;font-weight:700}.print-only .slip .hd span{font-weight:400;white-space:nowrap}
+.print-only .slip .ln{padding-left:4.5mm;text-indent:-4.5mm}.print-only .slip .sm{font-size:8pt}}
 @media(max-width:820px){.kan{grid-template-columns:1fr;overflow:visible}.ocard .acts button,.ocard .acts a{padding:11px 14px;font-size:14px}button.b,button.g,a.b{min-height:42px}input,select,textarea{font-size:16px}.wrap{overflow-x:auto}.modal>div{max-width:100%!important;max-height:92vh;overflow:auto;border-radius:16px}.top{flex-wrap:wrap;gap:8px}.cards{grid-template-columns:1fr!important}}
 @media(max-width:820px){.theme{margin:0 0 0 auto;padding:8px}.theme span{display:none}}
 .ver{display:block;font-size:11px;font-weight:500;color:var(--mute);letter-spacing:0;margin-top:1px}
@@ -745,6 +752,7 @@ async function printToday() {
   const L = await api('GET', '/api/print-today');
   const tot = L.reduce((t, x) => ({g: t.g + x.grams, m: t.m + x.minutes, pl: t.pl + x.plates}), {g: 0, m: 0, pl: 0});
   const hrs = m => m >= 60 ? (m / 60).toFixed(1) + ' h' : m + ' min';
+  const plist = `<div class="print-only"><h2>Print today <small>${new Date().toLocaleDateString('en-GB', {day: 'numeric', month: 'short'})} · ${tot.pl} plate${tot.pl === 1 ? '' : 's'} · ${Math.round(tot.g)} g${tot.m ? ' · ~' + hrs(tot.m) : ''}</small></h2>${L.map(x => `<div class="slip"><div class="hd">${esc(x.name)}<span>${x.plates} pl · ${Math.round(x.grams)} g${x.minutes ? ' · ' + hrs(x.minutes) : ''}</span></div>${x.orders.map(o => `<div class="ln">☐ ${o.qty}× ${o.variation ? esc(o.variation) : 'order'}${o.started ? ' (printing)' : ''}</div>`).join('')}${x.topup ? `<div class="ln">☐ ${x.topup}× top-up (stock ${x.stock})</div>` : ''}</div>`).join('') || '<p>Nothing to print.</p>'}</div>`;
   $('#main').innerHTML = `<div class="top"><h1>Print today</h1><span class="sp"></span><button class="b alt" onclick="window.print()">Print this list</button></div>
   ${L.length ? `<div class="note"><b>${L.length}</b> product${L.length === 1 ? '' : 's'} · about <b>${tot.pl}</b> plate${tot.pl === 1 ? '' : 's'} · <b>${Math.round(tot.g)} g</b> filament${tot.m ? ' · ~' + hrs(tot.m) + ' print time' : ''}</div>` : '<div class="note">Nothing to print — every order has stock and nothing is below its low-stock level. 🎉</div>'}
   <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">${L.map(x => `<div class="card">
@@ -754,6 +762,7 @@ async function printToday() {
     <div class="mute" style="font-size:12px">${x.plates} plate${x.plates === 1 ? '' : 's'} · ${x.grams} g${x.minutes ? ' · ~' + hrs(x.minutes) : ''}</div>
     <div class="bar no-print" style="margin:10px 0 0">${x.sale_ids.length ? `<button class="b alt" data-st="printing" data-ids="${x.sale_ids.join(',')}">Start printing</button>` : ''}${x.printing_ids.length ? `<button class="b" data-st="to_ship" data-ids="${x.printing_ids.join(',')}">Printed ✓</button>` : ''}${!x.sale_ids.length && !x.printing_ids.length ? '<span class="mute" style="font-size:12px">Log the print in Stock → Printing when done</span>' : ''}</div></div>`).join('')}</div>`;
   document.querySelectorAll('[data-st]').forEach(b => b.onclick = () => safe(async () => { await api('POST', '/api/orders/status', {status: b.dataset.st, sale_ids: b.dataset.ids.split(',')}); printToday(); }));
+  $('#main').insertAdjacentHTML('beforeend', plist);
 }
 async function dupTemplate(id) { const t = TEMPLATES.find(x => x.id === id); await safe(async () => { await api('POST', '/api/templates', {...t, name: t.name + ' (copy)'}); templates(); }); }
 async function delTemplate(id) { if (confirm('Delete this template?')) await safe(async () => { await api('DELETE', `/api/templates/${id}`); templates(); }); }
@@ -1334,7 +1343,7 @@ async function orders() {
   ${Object.keys(need).length ? `<div class="note"><b>To print:</b> ${Object.entries(need).map(([k, n]) => `${n}× ${esc(k)}`).join(' · ')} — <a href="#print">Print today →</a></div>` : ''}
   <div id="bulk"></div>
   <div class="kan">${STAGES.map(([k, l]) => `<div class="kcol"><h3><span>${l}</span><span>${by(k).length}</span></h3>${(k === 'shipped' ? shipped : by(k)).map(card).join('') || '<div class="mute" style="font-size:12px">Nothing here</div>'}</div>`).join('')}</div>
-  <div class="print-only"><h2>Packing list</h2>${by('to_ship').map(o => { const a = packAdvice(o); return `<div class="slip"><b>${o.order_ref ? 'Order #' + esc(o.order_ref) : 'Manual order'}</b> — ${o.date}${o.items.map(i => `<div>☐ ${i.qty}× ${esc(i.product)}${i.variation ? ' — ' + esc(i.variation) : ''}</div>`).join('')}${a.box ? `<div>Box: ${esc(a.box.name)}</div>` : ''}${a.supplies.length ? `<div>Grab: ${a.supplies.map(x => esc(x.name) + ' ' + x.q).join(', ')}</div>` : ''}</div>`; }).join('') || '<p>Nothing waiting to ship.</p>'}</div>`;
+  <div class="print-only"><h2>Packing list <small>${by('to_ship').length} order${by('to_ship').length === 1 ? '' : 's'}</small></h2>${by('to_ship').map(o => { const a = packAdvice(o); const extra = [a.box ? 'Box: ' + esc(a.box.name) : '', a.supplies.length ? 'Grab: ' + a.supplies.map(x => esc(x.name) + ' ' + x.q).join(', ') : ''].filter(Boolean).join(' · '); return `<div class="slip"><div class="hd">${o.order_ref ? '#' + esc(o.order_ref) : 'Manual order'}<span>${o.date}</span></div>${o.items.map(i => `<div class="ln">☐ ${i.qty}× ${esc(i.product)}${i.variation ? ' — ' + esc(i.variation) : ''}</div>`).join('')}${extra ? `<div class="sm">${extra}</div>` : ''}</div>`; }).join('') || '<p>Nothing waiting to ship.</p>'}</div>`;
   const bulk = () => {
     const sel = [...SEL].map(orderByKey).filter(Boolean), n = st => sel.filter(o => o.status === st);
     $('#bulk').innerHTML = sel.length ? `<div class="note" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:5"><b>${sel.length} selected</b>
